@@ -1,7 +1,6 @@
 from PyQt4 import QtGui, QtCore
 import sys, os, time, datetime
 from PIL import Image
-from core.QuadrantFunctions import QuadrantAnalysis
 
 
 class Worker(QtCore.QObject):
@@ -77,7 +76,7 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         # ---------------logo --------------------------------
 
         cumc_logo = QtGui.QLabel(self)  # defining the logo image
-        logo_fname = os.path.join(os.getcwd(), 'img', "QuadrantGUILogo.png")  # defining logo pathname
+        logo_fname = os.path.join(os.getcwd(), 'img', "Logo.png")  # defining logo pathname
         im2 = Image.open(logo_fname)  # opening the logo with PIL
         # im2 = im2.resize((self.deskW,self.deskH), PIL.Image.ANTIALIAS)
         # im2 = im2.resize((100,100), Image.ANTIALIAS)
