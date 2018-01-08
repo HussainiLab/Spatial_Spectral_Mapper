@@ -14,7 +14,6 @@ import core.SignalProcessing as sp
 import webcolors
 import datetime
 
-
 def find_sub(string, sub):
     '''finds all instances of a substring within a string and outputs a list of indices'''
     result = []
@@ -253,3 +252,39 @@ def get_eeg_extensions(set_filename):
     eeg_filenames = get_eeg_files(set_filename)
     return [os.path.splitext(file)[-1] for file in eeg_filenames
             if not os.path.exists(get_output_filename(file))]
+
+
+def find_f_peak(spectrogram, freqs):
+    """This function will take a spectrogram and find the frequency that contributes the peak power to the signal
+
+    i.e. if 20% of the power spectrum is 40 Hz and 80% is 70 Hz,
+    Fpeak = 70 Hz
+
+    spectrogram: mxn matrix (m, frequencies, n time points)"""
+
+    freqs = np.asarray(freqs).reshape((1, -1))  # ensuring that this array is an np array
+
+    freqs_i, time_i = np.where(spectrogram == np.amax(spectrogram, axis=0))
+
+    F_peak = np.zeros((1, spectrogram.shape[1]))
+
+    unique_times, time_counts = np.unique(time_i, return_counts=True)
+
+    if sum(time_counts) == len(time_i):
+        # then all the time points have unique max frequency values (most likely will be this way in all cases)
+        F_peak[0, time_i] = freqs[0, freqs_i]
+
+    else:
+
+        # can take care of the ones with only one max frequency value
+
+        unique_bools = np.where(time_counts) == 1
+        F_peak[0, time_i[unique_bools]] = freqs[0, freqs_i[unique_bools]]
+
+        mult_max_bool = np.where(time_counts > 1)
+
+        for col in time_i[mult_max_bool]:
+            freq_peak = freqs[0, freqs_i[np.where(col == time_i)]]
+            F_peak[0, col] = np.nanmean(freq_peak)
+
+    return F_peak.flatten()

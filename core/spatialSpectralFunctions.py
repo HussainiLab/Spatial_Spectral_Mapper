@@ -10,186 +10,117 @@ import mmap
 import contextlib
 import core.SignalProcessing as sp
 import webcolors
+import h5py
 
 
-def conj_nonzeros(X):
-    ind = np.where(X.imag != 0)
-    X[ind] = np.conj(X[ind])
+def create_colormap(color_list, boundary_list):
+    cmap = matplotlib.colors.ListedColormap(color_list)
+    # cmap.set_over('0.25')
+    # cmap.set_under('0.75')
 
-    return X
+    bounds = boundary_list
+    norm = matplotlib.colors.BoundaryNorm(bounds, cmap.N)
+
+    return cmap, norm
 
 
-def CWTGaborWavelet(data, Fs, f_min=0.1, f_max=500, FreqSeg=None, StDevCycles=3, TimeStep=None,
-                    magnitudes=True, SquaredMag=False):
+def get_spatialSpecData(filename):
+    """This function will get all the necessary data for spatialSpectrogram"""
+    with h5py.File(filename, 'r') as hf:
+
+        for item in hf.attrs.keys():
+            if 'Fs' in item:
+                Fs = hf.attrs[item]
+
+        for item, value in hf.items():
+            # print(item, value)
+
+            if item == 'bands':
+                bands = hf.get(item)
+            elif item == 'data':
+                data = hf.get(item)
+
+        # re-acquiring the frequency-boundaries
+        frequency_boundaries = {}
+        for item, value in bands.items():
+
+            if item != 'band_order':
+                frequency_boundaries[item] = bands.get(item)[:]
+            else:
+                # recreating the list that dictates the frequency band order
+                # for the data matrix
+                band_order = bands.get(item)[:]
+                band_order = band_order.flatten()
+                # convert from bytes to string (had to convert to bytes to save)
+                band_order = [value.decode('utf-8') for value in band_order]
+
+        # re-acquiring the data
+        for item, value in data.items():
+            if 'spectro' in item:
+                spectro_ds = data.get(item)[:]
+            elif 'peak' in item:
+                f_peak = data.get(item)[:]
+    return spectro_ds, f_peak, frequency_boundaries, band_order, Fs
+
+
+def get_all_labels(geometry):
+    rows, cols = geometry
+
+    x = np.arange(cols) + 1
+    y = np.arange(rows) + 1
+
+    labels = np.zeros(geometry)
+
+    for i, x_value in enumerate(x):
+        x_col = np.repeat(x_value, rows).reshape((-1, 1))  # creating column vector
+        labels[:, i] = (x_col + np.flipud(y.reshape((-1, 1)) / 100)).flatten()
+
+    return labels
+
+
+def track_to_xylabels(x_pos, y_pos, geometry):
     """
-    Will perform the continuous wavelet transform using the Gabor Wavelet
+    returns the list of labels for each datapoint
 
-    Fourier transform is the most common tool for analyzing frequency properties, however the
-    time-evolution of the resulting frequencies are not reflected in the Fourier transform
-    (not directly). Essentially, it also does represent abrupt changes in the waveform efficiently.
-    The fourier transform represents data as a sum of sine waves which are not localized in
-    time or space, and oscillate forever. Thus we will be using wavelets in order to keep
-    both the time and frequency aspects of the signal (and better handle the transient signals).
+     For example: 2x2 grid (geometry = (2,2))
 
-    Wavelet is a rapidly decaying wave-like oscillation with a mean of zero. There are many
-    types of wavelets: Morlet, Daubechies, Mexican Hat, etc.
-
-    The function that is going to be transformed is first multiplied by the Gaussian function,
-    g(x), then is transformed using a Fourier Transform.
-
-    Gaussian function, g(x) = (1/((σ^2 * π) ^(1/4))) * e^(-t^2 / (2*σ^2))
-    Gabor Wavelet, ψ(t) = g(t)*e^(iηt)
-
-    Guassian envelope windows are preferred as the same type of function would exist in either
-    domain (if we did rectangular envelopes, the conjugate domain would have a sinx/x function).
-
-
-    Continuous Wavelet Transform, C(s, t) = 1/sqrt(s)∫ f(t)*ψ((t-τ)/s), where s is scale,
-    τ is translation, and η is angular frequency at scale s,
-
-    σ = 6/η in order to satisfy the admissibility condition
-
-
-    inputs:
-    data: data to perform the trasnform on
-    Fs: sampling frequency (Hz) of the collected data
-    f_min: minimum frequency (Hz) to include in the resulting transform
-    f_max: maximum frequency (Hz) to include in the resulting trasnform
-    FreqSeg: the number of frequency segments to calculate
-    StDevCycles: in the wavelet transform, the scale corresponding to each frequency defines
-    the gaussian's standard dev used for calculating the transform. This parameter defines
-    the number of cycles you want to include in the transform at every frequency
-    TimeStep: This step value will determine the downsampling of the time value,
-    default is None, in which case all time values are preserved
-    Magnitudes: if True (default), it will return the magnitudes of the coefficients, False will
-    return analytic values (complex values)
-    SquaredMag:
+              y=100 -------------------------------------------
+                    |                    |                     |
+                    |                    |                     |
+                    |   Label = 1.2      |   Label = 2.2       |    y
+                    |                    |                     |    |
+                    |                    |                     |    a
+               y=50 -------------------------------------------     x
+                    |                    |                     |    i
+                    |                    |                     |    s
+                    |  Label = 1.1       |   Label = 2.1       |
+                    |                    |                     |
+                    |                    |                     |
+                y=0 -------------------------------------------|
+                    x=0                 x=50                  x=100
+                                x-axis
 
     """
 
-    if FreqSeg is None:
-        FreqSeg = Fs
+    # x is geometry[1] because the 2nd value pertains to number of columns
+    x_ticks = np.linspace(np.min(x_pos), np.max(x_pos), geometry[1] + 1)[:-1]
+    y_ticks = np.linspace(np.min(y_pos), np.max(y_pos), geometry[0] + 1)[:-1]
 
-    if f_min >= f_max:
-        print("The minimum frequency is larger than the maximum frequency, switching values")
-        temp_values = (f_min, f_max)
-        f_max, f_min = temp_values
+    x_lab = np.sum([x_pos >= t for t in x_ticks], 0)
+    y_lab = np.sum([y_pos >= t for t in y_ticks], 0)
 
-    if f_max < 0 or f_min < 0:
-        print("Inappropriate frequency value provided (does not accept negative values)")
+    return 1. * x_lab + y_lab / 100
 
-    # checking that the max frequency is appropriate
-    if f_max > Fs / 2:
-        f_max = Fs / 2
 
-    # checking that the minimum frequency is appropriate
-    if f_min == 0:
-        f_min = 0.1
+def plot_map_labels(x_pos, y_pos, labels, ax=None, **args):
+    if ax is None:
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(np.unique(labels))))
+    for l, c in zip(np.unique(labels), colors):
+        ax.scatter(x_pos[labels == l], y_pos[labels == l], color=c, **args)
 
-    # if an improper segment value was provided, fix it
-    if FreqSeg <= 0:
-        FreqSeg = np.around(f_max - f_min)
-
-    # calculate the frequency values
-
-    step = (f_max - f_min) / (FreqSeg - 1)
-
-    freqs = MatlabNumSeq(f_min, f_max, step).reshape((1, -1))
-    # freqs = np.arange(f_min, f_max+step-f_min, step)
-
-    # flip the matrix
-    freqs = np.fliplr(freqs)
-
-    if len(data) % 2 == 0:
-        # need an odd number of data points
-        data = data[:-1]
-
-    t = np.arange(len(data)) / Fs  # creating the time array
-
-    n = len(t)  # number of data points
-    n_half = int(np.floor(n / 2) + 1)
-
-    # creating an array from 0 -> 2 pi
-    WAxis = np.multiply(np.arange(n), (2 * np.pi / n))
-
-    WAxis *= Fs
-    WAxis_half = WAxis[:n_half]
-
-    if TimeStep is None:
-        SampAve = 1  # no timestep was given, keep all the time values
-    else:
-        SampAve = np.around(TimeStep * Fs)  #
-
-        if SampAve < 1:
-            SampAve = 1
-
-    SampAveFilt = np.array([])
-    if SampAve > 1:
-        # down sample the time
-        # IndSamp = np.arange(0, len(t), SampAve)
-        IndSamp = MatlabNumSeq(0, len(t) - 1, SampAve)
-        t = t[IndSamp]
-        SampAveFilt = np.ones(SampAve, 1)
-
-    data_fft = fftw.fft(data)  # transforming the input signal to the S domain
-    # data_fft = conj_nonzeros(data_fft)
-
-    GaborWT = np.zeros((freqs.shape[1], len(t)), dtype=np.complex)
-
-    FreqInd = -1
-
-    # reshaped freqs so that the freq value would take on a single value, not the entire array
-    for freq in freqs.reshape((-1, 1)):
-        # Calculating each frequency
-        StDevSec = (1 / freq) * StDevCycles
-
-        WinFFT = np.zeros((n, 1))
-        WinFFT[:n_half] = np.exp(-0.5 * np.power(
-            WAxis_half - (2 * np.pi * freq), 2) * (StDevSec ** 2)
-                                 ).reshape((-1, 1))
-        WinFFT = np.multiply(WinFFT, (np.sqrt(n) / np.linalg.norm(WinFFT, 2)))
-        # need to convert to complex otherwise imaginary numbers will be discarded
-        WinFFT = np.asarray(WinFFT, dtype=np.complex).flatten()
-
-        FreqInd += 1
-
-        if SampAve > 1:
-
-            GaborTemp = np.zeros(len(data_fft) + SampAve - 1, 1)
-            GaborTemp[SampAve - 1:] = fftw.ifft(np.multiply(data_fft, WinFFT)) / sqrt(StDevSec)
-
-            if magnitudes:
-                # return only the magnitudes
-                GaborTemp = np.absolute(GaborTemp)
-
-            if SquaredMag:
-                # return the squared magnitude
-                if not magnitudes:
-                    GaborTemp = np.absolute(GaborTemp)
-                GaborTemp = GaborTemp ** 2
-
-            GaborTemp[:SampAve - 1] = np.flipud(GaborTemp[SampAve, 2 * SampAve])
-            GaborTemp = np.divide(signal.lfilter(SampAveFilt, 1, GaborTemp), SampAve)
-            GaborTemp = GaborTemp[SampAve - 1:]
-
-            GaborWT[FreqInd, :] = GaborTemp[IndSamp]
-        else:
-            GaborWT[FreqInd, :] = fftw.ifft(np.multiply(data_fft, WinFFT)) / np.sqrt(StDevSec)
-
-    if SampAve > 1:
-        return GaborWT, t, freqs
-
-    if magnitudes:
-        GaborWT = np.absolute(GaborWT)
-
-    if SquaredMag:
-        if not magnitudes:
-            GaborWT = np.absolute(GaborWT)
-        GaborWT = GaborWT ** 2
-
-    # we flipped the GaborWT to have it in the same format as our
-    # Stockwell Transform method
-    return np.flipud(GaborWT), t, np.fliplr(freqs)
+    return ax
 
 
 def MatlabNumSeq(start, stop, step):
@@ -211,26 +142,214 @@ def MatlabNumSeq(start, stop, step):
     return seq
 
 
-def data2wavelet(data):
+def spatialSpectroMap(F, posx, posy, geometry):
+    """This will produce a ratemap-esque matrix (could be plotted)
+
+    F: an array of frequencie
+    posx: the position at that frequency
+    posy: the y position at that frequency
+    geometry: nxm grids"""
+
+    spectroMap = np.zeros((geometry))
+
+    all_labels = get_all_labels(geometry)
+
+    labels = track_to_xylabels(posx, posy, geometry)
+
+    for row, row_labels in enumerate(all_labels):
+        for col, current_label in enumerate(row_labels):
+
+            label_bool = np.where(labels == current_label)
+
+            current_freqs = F[label_bool]
+            if len(current_freqs) == 0:
+                spectroMap[row, col] = np.NaN
+            else:
+
+                spectroMap[row, col] = np.mean(current_freqs)
+
+    return spectroMap
+
+
+def get_filename(filename, file='pos'):
+    """This returns various filenames given the input of the h5py file
+
+    filename: the name of the output filename "c:\example\test_file.h5"
+    file: options='pos', 'set', the filetype that it will outout
     """
 
-    """
+    if file == 'pos':
+        return '%s.pos' % '_'.join(filename.split('_')[:-1])
+    elif file == 'set':
+        return '%s.set' % '_'.join(filename.split('_')[:-1])
 
-    first_half_ind = int(np.around(len(data) * 0.5) + 1)  # indices of the first half of the data
 
-    initial_window = data[:first_half_ind + 1]  # uses the first half of the data as the initial window
-    end_window = data[-2 - first_half_ind:]  # defines the end window
+color_list = [[215 / 255, 217 / 255, 221 / 255],  # 0, to 1 Hz, light gray
+                  [1 / 255, 0 / 255, 198 / 255],  # 1 to 3 Hz, navy blue
+                  [215 / 255, 217 / 255, 221 / 255],  # 3 to 4 Hz, light gray
+                  [66 / 255, 129 / 255, 255 / 255],  # 4 to 12 Hz, blue
+                  [215 / 255, 217 / 255, 221 / 255],  # 12 to 13 Hz, light gray
+                  'cyan',  # 13 to 20 Hz, light gray, beta
+                  [215 / 255, 217 / 255, 221 / 255],  # 20 to 35 Hz, light gray
+                  [59 / 255, 236 / 255, 26 / 255],  # 35 to 55 Hz, green
+                  [215 / 255, 217 / 255, 221 / 255],  # 55 to 65 Hz, light gray
+                  [175 / 255, 255 / 255, 191 / 255],  # 65 to 80 Hz, light green
+                  'yellow',  # 80 to 120 Hz, yellow
+                  'orange',  # 120 to 250 Hz, orange
+                  'red'  # 250 to 500 Hz, red
+                  ]
 
-    first = data[0]  # the first value
-    last = data[-1]  # defines the last value
 
-    initial_window = np.subtract(initial_window, first)  # wavelets start at 0
-    end_window = np.subtract(end_window, last)  # wavelets end with a 0
+def spatialSpectroAnalyze(self):
 
-    initial_window = np.flipud(-initial_window) + first
-    end_window = np.flipud(-end_window) + last
+    self.analyzing = True
 
-    initial_window = initial_window[:-1]
-    end_window = end_window[1:]
+    self.spectroGraphAxis.clear()
 
-    return np.concatenate((initial_window, data, end_window)), initial_window, end_window
+    # read the data
+    self.spectro_ds, self.f_peak, frequency_boundaries, band_order, Fs = get_spatialSpecData(self.filename.text())
+    self.t_axis = np.arange(self.spectro_ds.shape[1]) / Fs
+
+    self.t_start.setText('0')
+    self.t_stop.setText(str(np.amax(self.t_axis)))
+
+    ####### plotting the spectro (t-f tab) ############
+    yticks = MatlabNumSeq(0.5, len(band_order), 1)
+    ydotted = np.arange(len(band_order))
+
+    extent_vals = (np.amin(self.t_axis), np.amax(self.t_axis), 0, len(band_order))
+
+    plot = self.spectroGraphAxis.imshow(self.spectro_ds, origin='lower', aspect='auto', cmap='jet', interpolation='nearest',
+                                        extent=extent_vals)
+    self.spectroGraphAxis.set_yticks(yticks)
+    self.spectroGraphAxis.set_yticklabels(band_order)  # Or we could use plt.xticks(...)
+    self.spectroGraphAxis.hlines(ydotted, np.amin(self.t_axis), np.amax(self.t_axis), colors='w', linestyles='dashed')
+    self.spectroGraph.colorbar(plot, ax=self.spectroGraphAxis)
+    self.spectroGraphAxis.set_xlabel('Seconds (s)')
+    self.spectroGraphCanvas.draw()
+
+    ########## read the positions ############
+    pos_filename = get_filename(self.filename.text(), 'pos')
+    arena = self.arena.currentText()
+
+    posx, posy, post = getpos(pos_filename, arena)  # getting the mouse position
+
+    # centering the positions
+    center = centerBox(posx, posy)
+    posx = posx - center[0]
+    posy = posy - center[1]
+
+    # Threshold for how far a mouse can move (100cm/s), in one sample (sampFreq = 50 Hz
+    threshold = 100 / 50  # defining the threshold
+
+    posx, posy, post = remBadTrack(posx, posy, post, threshold)  # removing bad tracks (faster than threshold)
+
+    nonNanValues = np.where(np.isnan(posx) == False)[0]
+    # removeing any NaNs
+    post = post[nonNanValues]
+    posx = posx[nonNanValues]
+    posy = posy[nonNanValues]
+
+    # box car smoothing, closest we could get to replicating Tint's speeds
+    B = np.ones((int(np.ceil(0.4 * 50)), 1)) / np.ceil(0.4 * 50)
+
+    posx = scipy.ndimage.correlate(posx, B, mode='nearest')
+    posy = scipy.ndimage.correlate(posy, B, mode='nearest')
+
+    # interpolating the positions so there's one position per time value
+
+    Func_posx = interpolate.interp1d(post.flatten(), posx.flatten(), kind='linear')
+    Func_posy = interpolate.interp1d(post.flatten(), posy.flatten(), kind='linear')
+
+    # t_axis will have more points (and have larger max time so we need to only go to where post goes up to)
+
+    position_bool = np.where(self.t_axis <= np.amax(post))
+
+    self.posx_interp = Func_posx(self.t_axis[position_bool])
+    self.posy_interp = Func_posy(self.t_axis[position_bool])
+
+    # extend the interpolation with repeats of the last values of posx_interp, and posy_interp to ensure that
+    # t_axis and posx_interp/posy_interp have the same length
+    missing_positions = np.abs(len(self.posx_interp) - len(self.t_axis))
+    self.posx_interp = np.concatenate((self.posx_interp, np.tile(self.posx_interp[-1], (missing_positions, 1)).flatten()))
+    self.posy_interp = np.concatenate((self.posy_interp, np.tile(self.posy_interp[-1], (missing_positions, 1)).flatten()))
+
+    ############ breaking up the positions into bins to analyze #################
+    # geometry = self.geometry  # get the geometry of the bins (MxN grids)
+    self.geometry = (32, 32)
+    labels = track_to_xylabels(posx, posy, self.geometry)  # each bin has its own label
+
+    ####### plotting the position bins ###############
+    self.position_binsGraphAxis.clear()
+    plot_map_labels(posx, posy, labels, ax=self.position_binsGraphAxis)
+    plt.plot(self.posx_interp, self.posy_interp, "k-", alpha=0.2)
+
+    x_ticks = np.linspace(np.min(posx), np.max(posx), self.geometry[1] + 1)
+    y_ticks = np.linspace(np.min(posy), np.max(posy), self.geometry[0] + 1)
+
+    self.position_binsGraphAxis.vlines(x_ticks, np.min(posy), np.max(posy), linestyles='dashed')
+    self.position_binsGraphAxis.hlines(y_ticks, np.min(posx), np.max(posx), linestyles='dashed')
+    self.position_binsGraphAxis.set_xlabel('X-Position (cm)')
+    self.position_binsGraphAxis.set_ylabel('Y-Position (cm)')
+    self.position_binsGraphCanvas.draw()
+
+    # producing spectral map
+
+    spatialMap_peak = spatialSpectroMap(self.f_peak.flatten(), self.posx_interp, self.posy_interp, self.geometry)
+
+    extent_vals = (np.amin(x_ticks), np.amax(x_ticks), np.amin(y_ticks), np.amax(y_ticks))
+
+    colorbar_ticks = list(np.unique(np.asarray(list(frequency_boundaries.values()))))
+    colorbar_ticks.insert(0, 0)
+
+    self.PeakFreqGraphAxis.clear()
+
+    cm1, norm = create_colormap(color_list, colorbar_ticks)
+    # C = create_colormap(color_dict, np.nanmin(spatialMap_peak), np.ceil(np.nanmax(spatialMap_peak)))
+    peak_plot = self.PeakFreqGraphAxis.imshow(spatialMap_peak, aspect='auto', cmap=cm1, norm=norm, extent=extent_vals)
+    self.PeakFreqGraphAxis.plot(self.posx_interp, self.posy_interp, "k-", alpha=0.3)
+    self.PeakFreqGraphAxis.set_title("Peak Frequencies")
+    self.PeakFreqGraph.colorbar(peak_plot, ax=self.PeakFreqGraphAxis, ticks=colorbar_ticks)
+    self.PeakFreqGraphAxis.set_xlabel('X-Position (cm)')
+    self.PeakFreqGraphAxis.set_ylabel('Y-Position (cm)')
+
+    self.PeakFreqGraphCanvas.draw()
+
+    # producing subplots that show band percentages within each bin
+
+    norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
+    # for band, ax in enumerate(axs.flatten()):
+
+    # plot the velocity
+
+    extent_vals = (np.amin(x_ticks), np.amax(x_ticks), np.amin(y_ticks), np.amax(y_ticks))
+
+    self.v = speed2D(self.posx_interp, self.posy_interp, self.t_axis)  # smoothed speed of the mouse
+    velocity_spectroMap = spatialSpectroMap(self.v, self.posx_interp, self.posy_interp, self.geometry)
+    peak_plot = self.band_percGraphAxis[0, 0].imshow(velocity_spectroMap, aspect='auto', cmap='jet', extent=extent_vals)
+    self.band_percGraphAxis[0, 0].plot(self.posx_interp, self.posy_interp, "k-", alpha=0.3)
+    self.band_percGraphAxis[0, 0].set_title("Speed (cm/s)")
+    #self.band_percGraphAxis[0, 0].set_xlabel('X-Position (cm)')
+    #self.band_percGraphAxis[0, 0].set_ylabel('Y-Position (cm)')
+    self.band_percGraph.colorbar(peak_plot, ax=self.band_percGraphAxis[0, 0])
+
+    # plot the frequency bands
+    for band, ax in enumerate(self.band_percGraphAxis.flatten()):
+        band = band - 1
+
+        if ax == self.band_percGraphAxis[0, 0]:
+            continue
+
+        band_name = band_order[band]
+        current_freqs = frequency_boundaries[band_name]
+        current_spectroMap = spatialSpectroMap(self.spectro_ds[band, :], self.posx_interp, self.posy_interp, self.geometry)
+        peak_plot = ax.imshow(current_spectroMap, aspect='auto', cmap='jet', norm=norm, extent=extent_vals)
+        ax.plot(self.posx_interp, self.posy_interp, "k-", alpha=0.3)
+        ax.set_title("%s (%d Hz - %d Hz)" % (band_name, current_freqs[0], current_freqs[1]))
+        #ax.set_xlabel('X-Position (cm)')
+        #ax.set_ylabel('Y-Position (cm)')
+        self.band_percGraph.colorbar(peak_plot, ax=ax)
+
+    self.band_percGraphCanvas.draw()
+
+    self.analyzing = False
