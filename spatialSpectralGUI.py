@@ -16,12 +16,14 @@ class Worker(QtCore.QObject):
         self.args = args
         self.kwargs = kwargs
         self.start.connect(self.run)
+        self.running = True
 
     start = QtCore.pyqtSignal(int)
 
     @QtCore.pyqtSlot()
     def run(self):
         self.function(*self.args, **self.kwargs)
+        self.running = False
 
 
 def background(self):  # defines the background for each window
@@ -69,6 +71,9 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         '''a method that populates the QWidget with all the Widgets/layouts'''
 
         self.analyzing = False
+
+        self.LogError = Communicate()
+        self.LogError.myGUI_signal.connect(self.raiseError)
 
         # ---------- directory layout --------------------------------
         file_layout = QtGui.QHBoxLayout()
@@ -146,6 +151,12 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         position_bins_tab.setLayout(position_bins_layout)
 
         self.scrollbar = QtGui.QScrollBar(QtCore.Qt.Horizontal)
+        self.scrollbar.setPageStep(60)
+        self.scrollbar.setSingleStep(60)
+        self.scrollbar.valueChanged.connect(self.scrollChange)
+        # self.scrollbar.sliderReleased.connect(self.scrollChange)
+        self.scrollbar.setMinimum(0)
+        self.scrollbar.setMaximum(0)
 
         # self.scrollbar.actionTriggered.connect(functools.partial(self.changeCurrentGraph, 'scroll'))
 
@@ -166,6 +177,25 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         arena_layout.addWidget(arena_label)
         arena_layout.addWidget(self.arena)
 
+        geometry_label = QtGui.QLabel('Geometry (rows,cols)')
+        self.geometry_rows = QtGui.QLineEdit()
+        self.geometry_rows.setAlignment(QtCore.Qt.AlignHCenter)
+        self.geometry_rows.setText('32')
+        self.geometry_rows.textChanged.connect(self.get_geometry)
+
+        self.geometry_cols = QtGui.QLineEdit()
+        self.geometry_cols.setAlignment(QtCore.Qt.AlignHCenter)
+        self.geometry_cols.setText('32')
+        self.geometry_cols.textChanged.connect(self.get_geometry)
+
+        geometry_values_layout = QtGui.QHBoxLayout()
+        geometry_values_layout.addWidget(self.geometry_rows)
+        geometry_values_layout.addWidget(self.geometry_cols)
+
+        geometry_layout = QtGui.QHBoxLayout()
+        geometry_layout.addWidget(geometry_label)
+        geometry_layout.addLayout(geometry_values_layout)
+
         t_start_label = QtGui.QLabel('Start Time (s)')
         self.t_start = QtGui.QLineEdit()
         self.t_start.setAlignment(QtCore.Qt.AlignHCenter)
@@ -173,6 +203,7 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         t_start_layout.addWidget(t_start_label)
         t_start_layout.addWidget(self.t_start)
         self.t_start.setText('N/A')
+        self.t_start.textChanged.connect(functools.partial(self.changeSliceSize, 'times'))
 
         t_stop_label = QtGui.QLabel('Stop Time (s)')
         self.t_stop = QtGui.QLineEdit()
@@ -181,10 +212,29 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         t_stop_layout.addWidget(t_stop_label)
         t_stop_layout.addWidget(self.t_stop)
         self.t_stop.setText('N/A')
+        self.t_stop.textChanged.connect(functools.partial(self.changeSliceSize, 'times'))
+
+        slice_size_label = QtGui.QLabel('Slice Size (s)')
+        self.slice_size = QtGui.QLineEdit()
+        self.slice_size.setAlignment(QtCore.Qt.AlignHCenter)
+        slice_size_layout = QtGui.QHBoxLayout()
+        slice_size_layout.addWidget(slice_size_label)
+        slice_size_layout.addWidget(self.slice_size)
+        self.slice_size.setText('N/A')
+        self.slice_size.textChanged.connect(functools.partial(self.changeSliceSize, 'slice'))
+
+        scroll_step_label = QtGui.QLabel('Scroll Step (s)')
+        self.scroll_step = QtGui.QLineEdit()
+        self.scroll_step.setAlignment(QtCore.Qt.AlignHCenter)
+        scroll_step_layout = QtGui.QHBoxLayout()
+        scroll_step_layout.addWidget(scroll_step_label)
+        scroll_step_layout.addWidget(self.scroll_step)
+        self.scroll_step.setText('60')
+        self.scroll_step.textChanged.connect(self.changeScrollStep)
 
         parameter_layout = QtGui.QHBoxLayout()
         parameter_layout.addStretch(1)
-        for item in [t_start_layout, t_stop_layout, arena_layout]:
+        for item in [t_start_layout, t_stop_layout, slice_size_layout, scroll_step_layout, geometry_layout, arena_layout]:
             if 'Layout' in item.__str__():
                 parameter_layout.addLayout(item)
                 parameter_layout.addStretch(1)
@@ -196,7 +246,7 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         self.run_btn = QtGui.QPushButton("Run", self)
         self.run_btn.setToolTip("Click to run the analysis (or press Ctrl+R)!")
         self.run_btn.setShortcut("Ctrl+R")
-        self.run_btn.clicked.connect(self.analyze)  # connect the run button with the analyze() function
+        self.run_btn.clicked.connect(self.run)  # connect the run button with the analyze() function
 
         quit_btn = QtGui.QPushButton("Quit", self)
         quit_btn.clicked.connect(self.close_app)
@@ -243,33 +293,193 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
 
         center(self)
 
+        self.initialize_parameters()
+
         self.show()
+
+    def get_geometry(self):
+
+        try:
+            rows = int(self.geometry_rows.text())
+            cols = int(self.geometry_cols.text())
+
+            if rows >= 1 and cols >= 1:
+                # need positive integers (no zeros)
+                self.geometry = (rows, cols)
+            else:
+                self.geometry = False
+        except:
+            self.geometry = False
+
+        return self.geometry
+
+    def changeScrollStep(self):
+
+        try:
+            step_value = int(self.scroll_step.text())
+            self.scrollbar.setPageStep(step_value)
+            self.scrollbar.setSingleStep(step_value)
+            # self.scrollbar.setMinimum(0)
+            # self.scrollbar.setMaximum(self.max_t - self.scrollbar_width)
+        except ValueError:
+            print(self.scroll_step.text())
+
+    def scrollChange(self):
+
+        if self.data_loaded:
+            current_start = self.scrollbar.value()
+            current_stop = self.scrollbar.value() + self.scrollbar_width
+
+            self.t_start.setText(str(current_start))
+            self.t_stop.setText(str(current_stop))
+
+    def changeGraphs(self):
+        """Continuously checks if the graphs need to be updated"""
+        while not self.data_loaded:
+            if not self.analyzing:
+                error = self.analyze()
+                if 'Abort' in error:
+                    break
+            time.sleep(0.1)
+
+        while self.data_loaded:
+
+            if self.analyzing:
+                time.sleep(0.1)
+                continue
+
+            # if self.analyze_thread.isRunning():
+            if self.analyze_thread_worker.running:
+                time.sleep(0.1)
+                continue
+
+            try:
+                current_start = float(self.t_start.text())
+                current_stop = float(self.t_stop.text())
+            except ValueError:
+                time.sleep(0.1)
+                continue
+
+            if current_start == self.previous_t_start and current_stop == self.previous_t_stop:
+                """This is the current graph, skip"""
+                time.sleep(0.1)
+                continue
+
+            #if current_stop - current_start != float(self.slice_size.text()):
+            #    """The values don't match up yet, probably still updating, skip"""
+            #    continue
+
+            error = self.analyze()  # re-create the graphs
+            if 'Abort' in error:
+                break
+
+    def changeSliceSize(self, source):
+        """If the slice field is changed, it this method will change the t-stop value based off of the slice width,
+        if the start or stop time was changed, it will change the slice field to match"""
+
+        if self.data_loaded:
+            if 'slice' in source:
+                '''
+                self.scrollbar_width = float(self.slice_size.text())
+                t_stop_value = float(self.t_start.text()) + self.scrollbar_width
+                if t_stop_value > self.max_t:
+                    t_stop_value = self.max_t
+                    self.scrollbar_width = self.max_t
+                    self.slice_size.setText(str(t_stop_value))
+                    self.t_start.setText(str(self.max_t - self.scrollbar_width))
+
+                self.t_stop.setText(str(t_stop_value))
+                '''
+                self.scrollbar_width = float(self.slice_size.text())
+                self.scrollbar.setMinimum(0)
+                self.scrollbar.setMaximum(self.max_t - self.scrollbar_width)
+            elif 'times' in source:
+                """This will change the size size to match"""
+                try:
+
+                    new_size = float(self.t_stop.text()) - float(self.t_start.text())
+                    t_stop_value = float(self.t_start.text()) + new_size
+                    if t_stop_value > self.max_t:
+                        t_stop_value = self.max_t
+                        self.t_stop.setText(str(t_stop_value))
+                    else:
+                        self.slice_size.setText(str(new_size))
+                        self.scrollbar_width = new_size
+                        self.scrollbar.setMinimum(0)
+                        self.scrollbar.setMaximum(self.max_t - self.scrollbar_width)
+                except ValueError:
+                    # invalid time number most likely
+                    pass
+
+    '''
+    def SliceGraph(self, source):
+        if not self.data_loaded:
+            return
+
+        if 'text' in source:
+
+            if self.t_start.text() < 0:
+                self.t_start.setText('0')
+
+            if self.t_stop.text() > self.max_t:
+                self.t_stop.setText(str(self.max_t))
+
+            self.scrollbar_width = float(self.t_start.text()) - float(self.t_stop.text())
+            self.slice_size.setText = str(self.scrollbar_width)
+
+            self.scrollbar.setMinimum(0)
+            self.scrollbar.setMaximum(self.max_t - self.scrollbar_width)
+    '''
 
     def initialize_parameters(self):
 
+        self.labels = None
+        self.spectro_ydotted = None
+        self.spectro_yticks = None
+
+        # self.geometry_rows.setText('32')
+        # self.geometry_cols.setText('32')
+        self.bandpercGraphColorbar = []
+        self.PeakFreqGraphColorbar = None
+        self.spectroGraphColorbar = None
+
+        self.current_start = None
+        self.current_stop = None
+        self.previous_t_start = -1
+        self.previous_t_stop = -2
+        self.previous_arena = None
+        self.previous_geometry = None
+
+        self.geometry = False
         self.t_start.setText('N/A')
         self.t_stop.setText('N/A')
-
+        self.max_t = None
+        self.previousValue = 0
+        self.data_loaded = False
+        self.scrollbar_width = None
         self.analyzing = False
-
         self.spectro_ds = None
         self.posy_interp = None
         self.posx_interp = None
         self.f_peak = None
         self.v = None
+        self.frequency_boundaries = None
+        self.band_order = None
+        self.spectro_extent_vals = None
+        self.extent_vals = None
 
         self.PeakFreqGraphAxis.clear()
         self.position_binsGraphAxis.clear()
 
-        for ax in self.band_percGraphAxis:
+        for ax in self.band_percGraphAxis.flatten():
             ax.clear()
 
         self.spectroGraphAxis.clear()
 
         self.band_percGraphCanvas.draw()
         self.PeakFreqGraphCanvas.draw()
-        self.position_binsGraphCanvas.clear()
         self.spectroGraphCanvas.draw()
+        self.position_binsGraphCanvas.draw()
 
     def raiseError(self, error_val):
         '''raises an error window given certain errors from an emitted signal'''
@@ -285,47 +495,111 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
                                                      "Please make sure to choose an existing .H5 file before pressing 'Run'!\n",
                                                      QtGui.QMessageBox.Ok)
 
+        elif 'GeometryError' in error_val:
+            self.choice = QtGui.QMessageBox.question(self, "Error: Geometry!",
+                                                     "Make sure you are using a positive integer for both geometry values!\n",
+                                                     QtGui.QMessageBox.Ok)
+
+    def changed_parameters(self):
+        """this checks if the parameters have changed since the last run"""
+        # current_start = self.current_start
+        # current_stop = self.current_stop
+        current_start = float(self.t_start.text())
+        current_stop = float(self.t_stop.text())
+        current_geometry = self.get_geometry()
+        current_arena = self.arena.currentText()
+
+        if current_start != self.previous_t_start or current_stop != self.previous_t_stop or current_geometry != \
+                self.previous_geometry or current_arena != self.previous_arena:
+            return True
+        return False
+
+    def run(self):
+        # self.analyze()  # run the first analysis
+
+        self.run_thread = QtCore.QThread()
+        self.run_thread.start()
+        self.run_thread_worker = Worker(self.changeGraphs)
+        self.run_thread_worker.moveToThread(self.run_thread)
+        self.run_thread_worker.start.emit(1)
+
     def analyze(self):
 
         if not self.analyzing:
 
-            self.run_btn.setText('Stop')
-            self.run_btn.setToolTip('Click to stop analysis.')  # defining the tool tip for the start button
-            self.run_btn.clicked.disconnect()
-            self.run_btn.clicked.connect(self.stop_analysis)
-
             current_file = self.filename.text()
 
+            # check if a filename was chosen
             if 'Choose a Set' in current_file:
                 self.choice = ''
 
                 self.LogError.myGUI_signal.emit('ChooseH5')
                 while self.choice == '':
                     time.sleep(0.1)
-                return
+                self.stop_analysis()
+                # time.sleep(0.1)
+                return 'Abort'
 
+            # check if the filename exists
             if not os.path.exists(current_file):
                 self.choice = ''
 
                 self.LogError.myGUI_signal.emit('H5ExistError')
                 while self.choice == '':
                     time.sleep(0.1)
-                return
+                self.stop_analysis()
+                return 'Abort'
+
+            self.geometry = self.get_geometry()
+            # check if the geometry is valid
+            if self.geometry is False:
+
+                self.choice = ''
+
+                self.LogError.myGUI_signal.emit('GeometryError')
+                while self.choice == '':
+                    time.sleep(0.1)
+                self.stop_analysis()
+                return 'Abort'
+
+            # check if any parameters have changed
+            if self.data_loaded:
+                if not self.changed_parameters():
+                    return 'Abort'
+
+            self.run_btn.setText('Stop')
+            self.run_btn.setToolTip('Click to stop analysis.')  # defining the tool tip for the start button
+            self.run_btn.clicked.disconnect()
+            self.run_btn.clicked.connect(self.stop_analysis)
 
             self.analyze_thread = QtCore.QThread()
             self.analyze_thread.start()
-            self.analyze_thread_worker = Worker(Analyze, self)
+            if not self.data_loaded:
+                self.analyze_thread_worker = Worker(Analyze, self, current_start=0, current_stop=None)
+            else:
+                self.analyze_thread_worker = Worker(Analyze, self, current_start=float(self.t_start.text()),
+                                                    current_stop=float(self.t_stop.text()))
             self.analyze_thread_worker.moveToThread(self.analyze_thread)
             self.analyze_thread_worker.start.emit(1)
+            return ''
 
     def stop_analysis(self):
 
         self.run_btn.setText('Run')
-        self.analyze_thread.quit()
+        try:
+            self.run_btn.clicked.disconnect()
+            self.run_btn.clicked.connect(self.run)
+        except:
+            pass
+
+        # self.run_thread.deleteLater()
+        try:
+            self.run_thread.quit()
+            self.analyze_thread.quit()
+        except AttributeError:
+            pass
 
         self.run_btn.setToolTip('Click to start analysis.')  # defining the tool tip for the start button
-        self.run_btn.clicked.disconnect()
-        self.run_btn.clicked.connect(self.analyze)
 
     def close_app(self):
         '''Function that will close the app if the close button is pressed'''
@@ -335,6 +609,9 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
                                             "Do you really want to exit?",
                                             QtGui.QMessageBox.Yes | QtGui.QMessageBox.No)
         if choice == QtGui.QMessageBox.Yes:
+
+            self.stop_analysis()
+            time.sleep(0.1)
             sys.exit()  # tells the app to quit
         else:
             pass
@@ -349,9 +626,9 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
             self.initialize_parameters()
 
 
-def Analyze(self):
-    spatialSpectroAnalyze(self)
-    self.stop_analysis()
+def Analyze(self, current_start, current_stop=None):
+    spatialSpectroAnalyze(self, current_start=current_start, current_stop=current_stop)
+    # self.stop_analysis()
 
 
 class Communicate(QtCore.QObject):

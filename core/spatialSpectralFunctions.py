@@ -1,5 +1,5 @@
 from core.Tint_Matlab import *
-import os, datetime
+import os, datetime, time
 import numpy as np
 import matplotlib.pylab as plt
 import matplotlib
@@ -142,7 +142,7 @@ def MatlabNumSeq(start, stop, step):
     return seq
 
 
-def spatialSpectroMap(F, posx, posy, geometry):
+def spatialSpectroMap(F, posx, posy, labels=None, geometry=(32, 32)):
     """This will produce a ratemap-esque matrix (could be plotted)
 
     F: an array of frequencie
@@ -154,7 +154,8 @@ def spatialSpectroMap(F, posx, posy, geometry):
 
     all_labels = get_all_labels(geometry)
 
-    labels = track_to_xylabels(posx, posy, geometry)
+    if labels is None:
+        labels = track_to_xylabels(posx, posy, geometry)
 
     for row, row_labels in enumerate(all_labels):
         for col, current_label in enumerate(row_labels):
@@ -200,116 +201,183 @@ color_list = [[215 / 255, 217 / 255, 221 / 255],  # 0, to 1 Hz, light gray
                   ]
 
 
-def spatialSpectroAnalyze(self):
+def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
 
     self.analyzing = True
+    # check if the file exists still
+    filename = self.filename.text()
+    if not os.path.exists(filename):
+        self.choice = ''
+
+        self.LogError.myGUI_signal.emit('H5ExistError')
+        while self.choice == '':
+            time.sleep(0.1)
+        self.analyzing = False
+        return
+
+    # check if the geometry is valid
+    geometry = self.get_geometry()
+    if geometry is False:
+
+        self.choice = ''
+
+        self.LogError.myGUI_signal.emit('GeometryError')
+        while self.choice == '':
+            time.sleep(0.1)
+        self.analyzing = False
+        return
+
+    if current_stop is not None:
+        if current_start >= current_stop:
+            self.analyzing = False
+            return
+
+    # self.analyzing = True
 
     self.spectroGraphAxis.clear()
 
     # read the data
-    self.spectro_ds, self.f_peak, frequency_boundaries, band_order, Fs = get_spatialSpecData(self.filename.text())
-    self.t_axis = np.arange(self.spectro_ds.shape[1]) / Fs
+    if not self.data_loaded:
+        # this if statement is to make sure the data is only read once
+        self.spectro_ds, self.f_peak, self.frequency_boundaries, self.band_order, Fs = get_spatialSpecData(filename)
+        self.t_axis = np.arange(self.spectro_ds.shape[1]) / Fs
+        self.max_t = np.amax(self.t_axis)
 
-    self.t_start.setText('0')
-    self.t_stop.setText(str(np.amax(self.t_axis)))
+        current_start = current_start
+        current_stop = self.max_t
+
+        self.t_start.setText(str(current_start))
+        self.t_stop.setText(str(current_stop))
+        self.slice_size.setText(str(np.amax(self.t_axis)))
+
+        ####### setting up the t-f plots ############
+        self.spectro_yticks = MatlabNumSeq(0.5, len(self.band_order), 1)
+        self.spectro_ydotted = np.arange(len(self.band_order))
+
+        ########## read the positions ############
+        pos_filename = get_filename(filename, 'pos')
+        arena = self.arena.currentText()
+
+        posx, posy, post = getpos(pos_filename, arena)  # getting the mouse position
+
+        # centering the positions
+        center = centerBox(posx, posy)
+        posx = posx - center[0]
+        posy = posy - center[1]
+
+        # Threshold for how far a mouse can move (100cm/s), in one sample (sampFreq = 50 Hz
+        threshold = 100 / 50  # defining the threshold
+
+        posx, posy, post = remBadTrack(posx, posy, post, threshold)  # removing bad tracks (faster than threshold)
+
+        nonNanValues = np.where(np.isnan(posx) == False)[0]
+        # removeing any NaNs
+        post = post[nonNanValues]
+        posx = posx[nonNanValues]
+        posy = posy[nonNanValues]
+
+        # box car smoothing, closest we could get to replicating Tint's speeds
+        B = np.ones((int(np.ceil(0.4 * 50)), 1)) / np.ceil(0.4 * 50)
+
+        posx = scipy.ndimage.correlate(posx, B, mode='nearest')
+        posy = scipy.ndimage.correlate(posy, B, mode='nearest')
+
+        # interpolating the positions so there's one position per time value
+
+        Func_posx = interpolate.interp1d(post.flatten(), posx.flatten(), kind='linear')
+        Func_posy = interpolate.interp1d(post.flatten(), posy.flatten(), kind='linear')
+
+        # t_axis will have more points (and have larger max time so we need to only go to where post goes up to)
+
+        position_bool = np.where(self.t_axis <= np.amax(post))
+
+        self.posx_interp = Func_posx(self.t_axis[position_bool])
+        self.posy_interp = Func_posy(self.t_axis[position_bool])
+
+        # extend the interpolation with repeats of the last values of posx_interp, and posy_interp to ensure that
+        # t_axis and posx_interp/posy_interp have the same length
+        missing_positions = np.abs(len(self.posx_interp) - len(self.t_axis))
+        self.posx_interp = np.concatenate(
+            (self.posx_interp, np.tile(self.posx_interp[-1], (missing_positions, 1)).flatten()))
+        self.posy_interp = np.concatenate(
+            (self.posy_interp, np.tile(self.posy_interp[-1], (missing_positions, 1)).flatten()))
+
+        self.v = speed2D(self.posx_interp, self.posy_interp, self.t_axis)  # smoothed speed of the mouse
+    else:
+        arena = self.arena.currentText()
+
+    if geometry != self.previous_geometry:
+        ############ breaking up the positions into bins to analyze #################
+        # we will keep this one out of the data_loaded if statement since the user can change the geometry
+        self.labels = track_to_xylabels(self.posx_interp, self.posy_interp, geometry)  # each bin has its own label
+        self.x_ticks = np.linspace(np.min(self.posx_interp), np.max(self.posx_interp), geometry[1] + 1)
+        self.y_ticks = np.linspace(np.min(self.posy_interp), np.max(self.posy_interp), geometry[0] + 1)
+        self.extent_vals = (np.amin(self.x_ticks), np.amax(self.x_ticks), np.amin(self.y_ticks), np.amax(self.y_ticks))
+
+    # finding the indices for the current slice
+    t_bool = np.where((self.t_axis >= current_start) * (self.t_axis <= current_stop))[0]
+
+    t_axis = self.t_axis[t_bool]
+    spectro_ds = self.spectro_ds[:, t_bool]
+    posx_interp = self.posx_interp[t_bool]
+    posy_interp = self.posy_interp[t_bool]
+    labels = self.labels[t_bool]
+    f_peak = self.f_peak[0, t_bool]
+    v = self.v[t_bool]
 
     ####### plotting the spectro (t-f tab) ############
-    yticks = MatlabNumSeq(0.5, len(band_order), 1)
-    ydotted = np.arange(len(band_order))
 
-    extent_vals = (np.amin(self.t_axis), np.amax(self.t_axis), 0, len(band_order))
+    self.spectro_extent_vals = (np.amin(t_axis), np.amax(t_axis), 0, len(self.band_order))
+    plot = self.spectroGraphAxis.imshow(spectro_ds, origin='lower', aspect='auto', cmap='jet', interpolation='nearest',
+                                        extent=self.spectro_extent_vals)
+    self.spectroGraphAxis.set_yticks(self.spectro_yticks)
+    self.spectroGraphAxis.set_yticklabels(self.band_order)  # Or we could use plt.xticks(...)
+    self.spectroGraphAxis.hlines(self.spectro_ydotted, np.amin(t_axis), np.amax(t_axis), colors='w',
+                                 linestyles='dashed')
 
-    plot = self.spectroGraphAxis.imshow(self.spectro_ds, origin='lower', aspect='auto', cmap='jet', interpolation='nearest',
-                                        extent=extent_vals)
-    self.spectroGraphAxis.set_yticks(yticks)
-    self.spectroGraphAxis.set_yticklabels(band_order)  # Or we could use plt.xticks(...)
-    self.spectroGraphAxis.hlines(ydotted, np.amin(self.t_axis), np.amax(self.t_axis), colors='w', linestyles='dashed')
-    self.spectroGraph.colorbar(plot, ax=self.spectroGraphAxis)
+    if self.spectroGraphColorbar is not None:
+        self.spectroGraphColorbar.update_normal(plot)
+    else:
+        self.spectroGraphColorbar = self.spectroGraph.colorbar(plot, ax=self.spectroGraphAxis)
+
     self.spectroGraphAxis.set_xlabel('Seconds (s)')
     self.spectroGraphCanvas.draw()
 
-    ########## read the positions ############
-    pos_filename = get_filename(self.filename.text(), 'pos')
-    arena = self.arena.currentText()
-
-    posx, posy, post = getpos(pos_filename, arena)  # getting the mouse position
-
-    # centering the positions
-    center = centerBox(posx, posy)
-    posx = posx - center[0]
-    posy = posy - center[1]
-
-    # Threshold for how far a mouse can move (100cm/s), in one sample (sampFreq = 50 Hz
-    threshold = 100 / 50  # defining the threshold
-
-    posx, posy, post = remBadTrack(posx, posy, post, threshold)  # removing bad tracks (faster than threshold)
-
-    nonNanValues = np.where(np.isnan(posx) == False)[0]
-    # removeing any NaNs
-    post = post[nonNanValues]
-    posx = posx[nonNanValues]
-    posy = posy[nonNanValues]
-
-    # box car smoothing, closest we could get to replicating Tint's speeds
-    B = np.ones((int(np.ceil(0.4 * 50)), 1)) / np.ceil(0.4 * 50)
-
-    posx = scipy.ndimage.correlate(posx, B, mode='nearest')
-    posy = scipy.ndimage.correlate(posy, B, mode='nearest')
-
-    # interpolating the positions so there's one position per time value
-
-    Func_posx = interpolate.interp1d(post.flatten(), posx.flatten(), kind='linear')
-    Func_posy = interpolate.interp1d(post.flatten(), posy.flatten(), kind='linear')
-
-    # t_axis will have more points (and have larger max time so we need to only go to where post goes up to)
-
-    position_bool = np.where(self.t_axis <= np.amax(post))
-
-    self.posx_interp = Func_posx(self.t_axis[position_bool])
-    self.posy_interp = Func_posy(self.t_axis[position_bool])
-
-    # extend the interpolation with repeats of the last values of posx_interp, and posy_interp to ensure that
-    # t_axis and posx_interp/posy_interp have the same length
-    missing_positions = np.abs(len(self.posx_interp) - len(self.t_axis))
-    self.posx_interp = np.concatenate((self.posx_interp, np.tile(self.posx_interp[-1], (missing_positions, 1)).flatten()))
-    self.posy_interp = np.concatenate((self.posy_interp, np.tile(self.posy_interp[-1], (missing_positions, 1)).flatten()))
-
-    ############ breaking up the positions into bins to analyze #################
-    # geometry = self.geometry  # get the geometry of the bins (MxN grids)
-    self.geometry = (32, 32)
-    labels = track_to_xylabels(posx, posy, self.geometry)  # each bin has its own label
-
     ####### plotting the position bins ###############
     self.position_binsGraphAxis.clear()
-    plot_map_labels(posx, posy, labels, ax=self.position_binsGraphAxis)
-    plt.plot(self.posx_interp, self.posy_interp, "k-", alpha=0.2)
+    plot_map_labels(posx_interp, posy_interp, labels, ax=self.position_binsGraphAxis)
+    plt.plot(posx_interp, posy_interp, "k-", alpha=0.2)
 
-    x_ticks = np.linspace(np.min(posx), np.max(posx), self.geometry[1] + 1)
-    y_ticks = np.linspace(np.min(posy), np.max(posy), self.geometry[0] + 1)
-
-    self.position_binsGraphAxis.vlines(x_ticks, np.min(posy), np.max(posy), linestyles='dashed')
-    self.position_binsGraphAxis.hlines(y_ticks, np.min(posx), np.max(posx), linestyles='dashed')
+    self.position_binsGraphAxis.vlines(self.x_ticks, np.min(self.posy_interp), np.max(self.posy_interp),
+                                       linestyles='dashed')
+    self.position_binsGraphAxis.hlines(self.y_ticks, np.min(self.posx_interp), np.max(self.posx_interp),
+                                       linestyles='dashed')
     self.position_binsGraphAxis.set_xlabel('X-Position (cm)')
     self.position_binsGraphAxis.set_ylabel('Y-Position (cm)')
     self.position_binsGraphCanvas.draw()
 
     # producing spectral map
 
-    spatialMap_peak = spatialSpectroMap(self.f_peak.flatten(), self.posx_interp, self.posy_interp, self.geometry)
+    spatialMap_peak = spatialSpectroMap(f_peak.flatten(), posx_interp, posy_interp, labels, geometry)
 
-    extent_vals = (np.amin(x_ticks), np.amax(x_ticks), np.amin(y_ticks), np.amax(y_ticks))
-
-    colorbar_ticks = list(np.unique(np.asarray(list(frequency_boundaries.values()))))
+    colorbar_ticks = list(np.unique(np.asarray(list(self.frequency_boundaries.values()))))
     colorbar_ticks.insert(0, 0)
 
     self.PeakFreqGraphAxis.clear()
 
     cm1, norm = create_colormap(color_list, colorbar_ticks)
     # C = create_colormap(color_dict, np.nanmin(spatialMap_peak), np.ceil(np.nanmax(spatialMap_peak)))
-    peak_plot = self.PeakFreqGraphAxis.imshow(spatialMap_peak, aspect='auto', cmap=cm1, norm=norm, extent=extent_vals)
-    self.PeakFreqGraphAxis.plot(self.posx_interp, self.posy_interp, "k-", alpha=0.3)
+    peak_plot = self.PeakFreqGraphAxis.imshow(spatialMap_peak, aspect='auto', cmap=cm1, norm=norm,
+                                              extent=self.extent_vals)
+    self.PeakFreqGraphAxis.plot(posx_interp, posy_interp, "k-", alpha=0.3)
     self.PeakFreqGraphAxis.set_title("Peak Frequencies")
-    self.PeakFreqGraph.colorbar(peak_plot, ax=self.PeakFreqGraphAxis, ticks=colorbar_ticks)
+
+    if self.PeakFreqGraphColorbar is not None:
+        self.PeakFreqGraphColorbar.update_normal(peak_plot)
+    else:
+        self.PeakFreqGraphColorbar = self.PeakFreqGraph.colorbar(peak_plot, ax=self.PeakFreqGraphAxis,
+                                                                 ticks=colorbar_ticks)
+
     self.PeakFreqGraphAxis.set_xlabel('X-Position (cm)')
     self.PeakFreqGraphAxis.set_ylabel('Y-Position (cm)')
 
@@ -322,34 +390,50 @@ def spatialSpectroAnalyze(self):
 
     # plot the velocity
 
-    extent_vals = (np.amin(x_ticks), np.amax(x_ticks), np.amin(y_ticks), np.amax(y_ticks))
-
-    self.v = speed2D(self.posx_interp, self.posy_interp, self.t_axis)  # smoothed speed of the mouse
-    velocity_spectroMap = spatialSpectroMap(self.v, self.posx_interp, self.posy_interp, self.geometry)
-    peak_plot = self.band_percGraphAxis[0, 0].imshow(velocity_spectroMap, aspect='auto', cmap='jet', extent=extent_vals)
-    self.band_percGraphAxis[0, 0].plot(self.posx_interp, self.posy_interp, "k-", alpha=0.3)
-    self.band_percGraphAxis[0, 0].set_title("Speed (cm/s)")
-    #self.band_percGraphAxis[0, 0].set_xlabel('X-Position (cm)')
-    #self.band_percGraphAxis[0, 0].set_ylabel('Y-Position (cm)')
-    self.band_percGraph.colorbar(peak_plot, ax=self.band_percGraphAxis[0, 0])
+    velocity_spectroMap = spatialSpectroMap(v, posx_interp, posy_interp, labels, geometry)
 
     # plot the frequency bands
     for band, ax in enumerate(self.band_percGraphAxis.flatten()):
         band = band - 1
+        ax.clear()
 
         if ax == self.band_percGraphAxis[0, 0]:
+
+            velocity_plot = ax.imshow(velocity_spectroMap, aspect='auto', cmap='jet',
+                                                                 extent=self.extent_vals)
+            ax.plot(posx_interp, posy_interp, "k-", alpha=0.3)
+            ax.set_title("Speed (cm/s)")
+
+            if len(self.bandpercGraphColorbar) == 8:
+                current_colorbar = self.bandpercGraphColorbar[0]
+                current_colorbar.update_normal(velocity_plot)
+            else:
+                current_colorbar = self.band_percGraph.colorbar(velocity_plot, ax=self.band_percGraphAxis[0, 0])
+                self.bandpercGraphColorbar.append(current_colorbar)
             continue
 
-        band_name = band_order[band]
-        current_freqs = frequency_boundaries[band_name]
-        current_spectroMap = spatialSpectroMap(self.spectro_ds[band, :], self.posx_interp, self.posy_interp, self.geometry)
-        peak_plot = ax.imshow(current_spectroMap, aspect='auto', cmap='jet', norm=norm, extent=extent_vals)
-        ax.plot(self.posx_interp, self.posy_interp, "k-", alpha=0.3)
+        band_name = self.band_order[band]
+        current_freqs = self.frequency_boundaries[band_name]
+        current_spectroMap = spatialSpectroMap(spectro_ds[band, :], posx_interp, posy_interp, labels, geometry)
+        peak_plot = ax.imshow(current_spectroMap, aspect='auto', cmap='jet', norm=norm, extent=self.extent_vals)
+        ax.plot(posx_interp, posy_interp, "k-", alpha=0.3)
         ax.set_title("%s (%d Hz - %d Hz)" % (band_name, current_freqs[0], current_freqs[1]))
         #ax.set_xlabel('X-Position (cm)')
         #ax.set_ylabel('Y-Position (cm)')
-        self.band_percGraph.colorbar(peak_plot, ax=ax)
+        if len(self.bandpercGraphColorbar) == 8:
+            current_colorbar = self.bandpercGraphColorbar[band + 1]
+            current_colorbar.update_normal(peak_plot)
+        else:
+            current_colorbar = self.band_percGraph.colorbar(peak_plot, ax=ax)
+            self.bandpercGraphColorbar.append(current_colorbar)
 
     self.band_percGraphCanvas.draw()
 
+    self.previous_t_start = current_start
+    self.previous_t_stop = current_stop
+    self.previous_geometry = geometry
+    self.previous_arena = arena
     self.analyzing = False
+
+    if not self.data_loaded:
+        self.data_loaded = True
