@@ -171,6 +171,7 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
         # creates the list of .EEG types
         self.eeg_types = QtGui.QTreeWidget()
+        self.eeg_types.setSelectionMode(QtGui.QAbstractItemView.MultiSelection)  # allow for multiple selections
         self.eeg_types.headerItem().setText(0, "EEG Types:")
         eeg_types_label = QtGui.QLabel("EEG Types:")
         eeg_types_label.setFont(QtGui.QFont("Arial", 10, weight=QtGui.QFont.Bold))
@@ -228,6 +229,12 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
     def initialize_parameters(self):
 
         self.extensions = []
+
+        self.analyzed_files = []
+
+        self.recording_queue.clear()
+        self.eeg_types.clear()
+
 
     def changed_directory(self):
         self.directory = self.directory_edit.text()
@@ -361,13 +368,17 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
             # add the sessions to the TreeWidget
             for session in self.sessions:
+
+                if session in self.analyzed_files:
+                    continue
+
                 if isinstance(session, str):
                     session = [session]  # needs to be a list for the sorted()[] line
 
                 tint_basename = os.path.basename(os.path.splitext(sorted(session, reverse=False)[0])[0])
 
-                # if session == self.current_session:
-                #    already_added = True
+                if session == self.current_session:
+                    continue
 
                 # only adds the sessions that haven't been added already
 
@@ -407,12 +418,12 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
     def Process(self):
         self.choice == ''
         self.current_session = ''
-        self.parameters = self.get_paramters()
+        # self.parameters = self.get_paramters()
 
         self.process_button.setText('Stop Processing')
         self.process_button.setToolTip('Click to stop the processing.')  # defining the tool tip for the start button
         self.process_button.clicked.disconnect()
-        self.process_button.clicked.connect(self.StopOrocessing)
+        self.process_button.clicked.connect(self.StopProcessing)
 
         # self.addSessions()
 
@@ -453,7 +464,8 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
                         time.sleep(0.1)
                     continue
 
-            ProcessSession(self, self.session_item.data(0, 0), self.parameters)
+            # ProcessSession(self, self.session_item.data(0, 0), self.parameters)
+            ProcessSession(self, self.session_item.data(0, 0))
 
     def StopProcessing(self):
         self.process_button.setText('Process')
@@ -478,7 +490,6 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
         directory_file_list = os.listdir(
             directory)  # making a list of all files within the specified directory
-
 
         set_filenames = []
 
@@ -572,13 +583,6 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
         parameters = {}
 
-        if self.batch_tint_checkbox.isChecked():
-            parameters['batchtint'] = True
-        else:
-            parameters['batchtint'] = False
-
-        parameters['tintsettings'] = self.batchtintsettings_edit.text()
-
         return parameters
 
     def takeTopLevel(self, item_count):
@@ -629,27 +633,20 @@ def center(self):
     self.move(frameGm.topLeft())
 
 
-def ProcessSession(main_window, directory, parameters):
+def ProcessSession(main_window, directory):
 
     if 'Choose a Directory!' in directory:
         main_window.LogError.myGUI_signal.emit('NoDir')
 
     """This function will take in a session files and then process the files associated with this session"""
 
-    ##################################################################################################
-    # ------------------Concatenates all the LFP/time data for each session---------------------------
-    ##################################################################################################
-
-    # tint_basename = os.path.basename(os.path.splitext(sorted(session_files, reverse=False)[0])[0])
-    # current_session = directory
-
     main_window.current_session = directory
 
     # remove the appropriate session from the TreeWidget
     iterator = QtGui.QTreeWidgetItemIterator(main_window.recording_queue)
     item_found = False
-    # loops through the tree to see if the session is already there
 
+    # Finds the sessions within the given directory
     while iterator.value() and not item_found:
         main_window.item = iterator.value()
 
@@ -667,6 +664,7 @@ def ProcessSession(main_window, directory, parameters):
         else:
             iterator += 1
 
+    # analyzes each session within that directory
     for child_index, basename in enumerate(tint_basenames):
 
         # if not item.child(child_index):
@@ -699,35 +697,6 @@ def ProcessSession(main_window, directory, parameters):
             while not main_window.top_level_taken:
                 time.sleep(0.1)
 
-        if isinstance(processed, str):
-            # ensures that the aborted session does not go into batchTint or get moved
-            if 'Aborted' in processed:
-                continue
-                # return
-
-    # move to the processed file
-    process_fpath = os.path.join(main_window.directory, 'Processed')
-    if not os.path.exists(process_fpath):
-        os.mkdir(process_fpath)
-
-    directory_source = os.path.join(main_window.directory, directory)
-    directory_destination = os.path.join(process_fpath, directory)
-
-    if os.path.exists(directory_destination):
-        try:
-            copy_tree(directory_source, directory_destination)
-        except FileNotFoundError:
-            return
-        try:
-            shutil.rmtree(directory_source)
-        except PermissionError:
-            main_window.LogAppend.myGUI_signal.emit(
-                '[%s %s]: The following directory could not be deleted, close files and then delete the directory.' %
-                (str(datetime.datetime.now().date()),
-                 str(datetime.datetime.now().time())[:8]))
-    else:
-        shutil.move(directory_source, process_fpath)
-
 
 def run():
     app = QtGui.QApplication(sys.argv)
@@ -736,6 +705,7 @@ def run():
     main_window.raise_()  # making the main window on top
 
     sys.exit(app.exec_())  # prevents the window from immediately exiting out
+
 
 if __name__ == '__main__':
     run()

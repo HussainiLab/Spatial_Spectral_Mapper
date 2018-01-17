@@ -179,10 +179,14 @@ def get_filename(filename, file='pos'):
     file: options='pos', 'set', the filetype that it will outout
     """
 
+    directory = os.path.dirname(os.path.dirname(filename))  # need to go up 2 directories
+
+    filename = os.path.basename(filename)  # return only the basename
+
     if file == 'pos':
-        return '%s.pos' % '_'.join(filename.split('_')[:-1])
+        return os.path.join(directory, '%s.pos' % '_'.join(filename.split('_')[:-1]))
     elif file == 'set':
-        return '%s.set' % '_'.join(filename.split('_')[:-1])
+        return os.path.join(directory, '%s.set' % '_'.join(filename.split('_')[:-1]))
 
 
 color_list = [[215 / 255, 217 / 255, 221 / 255],  # 0, to 1 Hz, light gray
