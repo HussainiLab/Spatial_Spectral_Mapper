@@ -172,21 +172,18 @@ def spatialSpectroMap(F, posx, posy, labels=None, geometry=(32, 32)):
     return spectroMap
 
 
-def get_filename(filename, file='pos'):
+def get_filename(filename, ext='pos'):
     """This returns various filenames given the input of the h5py file
 
     filename: the name of the output filename "c:\example\test_file.h5"
     file: options='pos', 'set', the filetype that it will outout
     """
 
-    directory = os.path.dirname(os.path.dirname(filename))  # need to go up 2 directories
+    directory = os.path.dirname(os.path.dirname(os.path.dirname(filename)))  # need to go up 3 directories
 
     filename = os.path.basename(filename)  # return only the basename
 
-    if file == 'pos':
-        return os.path.join(directory, '%s.pos' % '_'.join(filename.split('_')[:-1]))
-    elif file == 'set':
-        return os.path.join(directory, '%s.set' % '_'.join(filename.split('_')[:-1]))
+    return os.path.join(directory, '%s.%s' % ('_'.join(filename.split('_')[:-1]), ext))
 
 
 color_list = [[215 / 255, 217 / 255, 221 / 255],  # 0, to 1 Hz, light gray
@@ -203,6 +200,31 @@ color_list = [[215 / 255, 217 / 255, 221 / 255],  # 0, to 1 Hz, light gray
                   'orange',  # 120 to 250 Hz, orange
                   'red'  # 250 to 500 Hz, red
                   ]
+
+
+def find_consec(data):
+    '''finds the consecutive numbers and outputs as a list'''
+    consecutive_values = []  # a list for the output
+    current_consecutive = [data[0]]
+
+    if len(data) == 1:
+        return [[data[0]]]
+
+    for index in range(1, len(data)):
+
+        if data[index] == data[index - 1] + 1:
+            current_consecutive.append(data[index])
+
+            if index == len(data) - 1:
+                consecutive_values.append(current_consecutive)
+
+        else:
+            consecutive_values.append(current_consecutive)
+            current_consecutive = [data[index]]
+
+            if index == len(data) - 1:
+                consecutive_values.append(current_consecutive)
+    return consecutive_values
 
 
 def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
@@ -243,9 +265,44 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
     # read the data
     if not self.data_loaded:
         # this if statement is to make sure the data is only read once
+
+        eeg_type = os.path.splitext(os.path.basename(filename).split('_')[-1])[0]
+        self.eeg, Fs_EEG = ReadEEG(get_filename(filename, eeg_type))
+        self.eeg_t = np.arange(len(self.eeg)) / Fs_EEG
+        zero_ind = find_consec(np.where((self.eeg.flatten() == 0) | (self.eeg.flatten() == 0.0))[0])[-1]
+
+        # check if the final index is in the list
+        if len(self.eeg.flatten()) - 1 not in zero_ind:
+            self.appended_zeros = False
+            pass
+        else:
+            self.appended_zeros = True
+            self.zero_t_start = self.eeg_t[zero_ind[0]-1]
+
         self.spectro_ds, self.f_peak, self.frequency_boundaries, self.band_order, Fs = get_spatialSpecData(filename)
+
+
+        self.spatial_spectral_freq_bounds = {}
+
+        for key, value in self.frequency_boundaries.items():
+            if 'spindle' in key.lower():
+                continue
+
+            elif 'alpha' in key.lower():
+                continue
+
+            else:
+                self.spatial_spectral_freq_bounds[key] = value
+
+
         self.t_axis = np.arange(self.spectro_ds.shape[1]) / Fs
+        self.t_axis_bool = np.where(self.t_axis <= self.zero_t_start)[0]
+
+        self.spectro_ds = self.spectro_ds[:, self.t_axis_bool]
+        self.t_axis = self.t_axis[self.t_axis_bool]
+
         self.max_t = np.amax(self.t_axis)
+        # self.max_t = np.amax(self.t_axis[self.t_axis_bool])
 
         current_start = current_start
         current_stop = self.max_t
@@ -301,10 +358,14 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
         # extend the interpolation with repeats of the last values of posx_interp, and posy_interp to ensure that
         # t_axis and posx_interp/posy_interp have the same length
         missing_positions = np.abs(len(self.posx_interp) - len(self.t_axis))
-        self.posx_interp = np.concatenate(
-            (self.posx_interp, np.tile(self.posx_interp[-1], (missing_positions, 1)).flatten()))
-        self.posy_interp = np.concatenate(
-            (self.posy_interp, np.tile(self.posy_interp[-1], (missing_positions, 1)).flatten()))
+
+        if missing_positions > 0:
+            # when we weren't removing the appended zeros there used to be some missing points as the t_axis
+            # values extended larger than the post values (thus requiring extrapolation not interpolation)
+            self.posx_interp = np.concatenate(
+                (self.posx_interp, np.tile(self.posx_interp[-1], (missing_positions, 1)).flatten()))
+            self.posy_interp = np.concatenate(
+                (self.posy_interp, np.tile(self.posy_interp[-1], (missing_positions, 1)).flatten()))
 
         self.v = speed2D(self.posx_interp, self.posy_interp, self.t_axis)  # smoothed speed of the mouse
     else:
@@ -364,7 +425,7 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
 
     spatialMap_peak = spatialSpectroMap(f_peak.flatten(), posx_interp, posy_interp, labels, geometry)
 
-    colorbar_ticks = list(np.unique(np.asarray(list(self.frequency_boundaries.values()))))
+    colorbar_ticks = list(np.unique(np.asarray(list(self.spatial_spectral_freq_bounds.values()))))
     colorbar_ticks.insert(0, 0)
 
     self.PeakFreqGraphAxis.clear()
@@ -408,7 +469,7 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
             ax.plot(posx_interp, posy_interp, "k-", alpha=0.3)
             ax.set_title("Speed (cm/s)")
 
-            if len(self.bandpercGraphColorbar) == 8:
+            if len(self.bandpercGraphColorbar) == 10:
                 current_colorbar = self.bandpercGraphColorbar[0]
                 current_colorbar.update_normal(velocity_plot)
             else:
@@ -424,7 +485,7 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
         ax.set_title("%s (%d Hz - %d Hz)" % (band_name, current_freqs[0], current_freqs[1]))
         #ax.set_xlabel('X-Position (cm)')
         #ax.set_ylabel('Y-Position (cm)')
-        if len(self.bandpercGraphColorbar) == 8:
+        if len(self.bandpercGraphColorbar) == 10:
             current_colorbar = self.bandpercGraphColorbar[band + 1]
             current_colorbar.update_normal(peak_plot)
         else:

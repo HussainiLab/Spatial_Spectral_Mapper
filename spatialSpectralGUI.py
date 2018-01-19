@@ -128,7 +128,7 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
 
         tabs.addTab(band_perc_tab, 'Band Percentage')
 
-        self.band_percGraph, self.band_percGraphAxis = plt.subplots(2, 4, figsize=(20, 15))
+        self.band_percGraph, self.band_percGraphAxis = plt.subplots(2, 5, figsize=(20, 15))
         # self.band_percGraph = plt.figure(figsize=(30, 30))
         self.band_percGraphCanvas = FigureCanvas(self.band_percGraph)
         # self.band_percGraphAxis = self.band_percGraph.add_axes([0.1, 0.2, 0.85, 0.75], frameon=False)
@@ -450,6 +450,12 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         self.previous_arena = None
         self.previous_geometry = None
 
+        self.spatial_spectral_freq_bounds = {}
+        self.t_axis_bool = None
+        self.zero_t_start = None
+        self.appended_zeros = True
+        self.eeg = None
+        self.eeg_t = None
         self.geometry = False
         self.t_start.setText('N/A')
         self.t_stop.setText('N/A')
