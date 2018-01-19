@@ -96,6 +96,28 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
         # ------ buttons + widgets -----------------------------
 
+        self.chunk_size = QtGui.QLineEdit()
+        self.chunk_size.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
+        chunk_size = QtGui.QLabel('Chunk Size(sec)')
+        chunk_size_layout = QtGui.QHBoxLayout()
+        chunk_size_layout.addWidget(chunk_size)
+        chunk_size_layout.addWidget(self.chunk_size)
+
+        self.chunk_overlap = QtGui.QLineEdit()
+        self.chunk_overlap.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
+        chunk_overlap = QtGui.QLabel('Chunk Overlap(sec)')
+        chunk_overlap_layout = QtGui.QHBoxLayout()
+        chunk_overlap_layout.addWidget(chunk_overlap)
+        chunk_overlap_layout.addWidget(self.chunk_overlap)
+
+        parameter_layout = QtGui.QHBoxLayout()
+
+        for item in [chunk_size_layout, chunk_overlap_layout]:
+            if 'Layout' in item.__str__():
+                parameter_layout.addLayout(item)
+            else:
+                parameter_layout.addWidget(item)
+
         quit_btn = QtGui.QPushButton("Quit", self)
         quit_btn.clicked.connect(self.close_app)
         quit_btn.setShortcut("Ctrl+Q")
@@ -196,7 +218,7 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
         layout = QtGui.QVBoxLayout()
 
-        layout_order = [directory_layout, qtree_layout, log_layout, btn_layout]
+        layout_order = [directory_layout, qtree_layout, log_layout, parameter_layout, btn_layout]
 
         for order in layout_order:
             if 'Layout' in order.__str__():
@@ -230,11 +252,19 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
         self.extensions = []
 
+        self.current_session = ''
+        self.current_directory = ''
+
         self.analyzed_files = []
+
+        if self.chunk_size.text() == '':
+            self.chunk_size.setText('')
+
+        if self.chunk_overlap.text() == '':
+            self.chunk_overlap.setText('')
 
         self.recording_queue.clear()
         self.eeg_types.clear()
-
 
     def changed_directory(self):
         self.directory = self.directory_edit.text()
@@ -257,60 +287,25 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
                                                      "please choose one to continue!",
                                                      QtGui.QMessageBox.Ok)
 
-        elif 'NoPos' in error_val:
-            session_pos_filename = error_val[error_val.find('!')+1:]
-            self.choice = QtGui.QMessageBox.question(self, "No '.pos' file!",
-                                                     "There '.pos' file for this session:\n" +
-                                                     '%s\n' %session_pos_filename +
-                                                     "was not found. would you like a dummy '.pos' file \n"
-                                                     "to be created for you?\n",
-                                                     QtGui.QMessageBox.Yes, QtGui.QMessageBox.No)
+        elif 'NoEEGType' in error_val:
+            self.choice = QtGui.QMessageBox.question(self, "No Selected EEG Type(s)",
+                                                     "Please selected desired EEG Type(s) to be analyzed!",
+                                                     QtGui.QMessageBox.Ok)
 
-        elif 'NoTintSettings' in error_val:
-            self.choice = QtGui.QMessageBox.question(self, "No Batch-Tint Settings Directory!",
-                                                     "You have not chosen the settings directory for Batch-Tint,\n"
-                                                     "in the main directory that holds all the Batch-Tint files\n"
-                                                     "there will be a directory entitled 'settings' that holds\n"
-                                                     "all the '.json' files, please choose this folder to continue!",
-                                                     QtGui.QMessageBox.Ok | QtGui.QMessageBox.Abort)
-            while self.choice == '':
-                time.sleep(0.5)
+        elif 'ChunkInvalid' in error_val:
+            self.choice = QtGui.QMessageBox.question(self, "Invalid Chunk Size",
+                                                     "Please choose a valid Chunk Size!",
+                                                     QtGui.QMessageBox.Ok)
 
-            if self.choice == QtGui.QMessageBox.Ok:
-                self.new_settings_directory()
-            else:
-                return
+        elif 'OverlapInvalid' in error_val:
+            self.choice = QtGui.QMessageBox.question(self, "Invalid Chunk Overlap",
+                                                     "Please choose a valid Chunk Overlap!",
+                                                     QtGui.QMessageBox.Ok)
 
-        elif 'StillNoTintSettings' in error_val:
-            self.choice = QtGui.QMessageBox.question(self, "No Batch-Tint Settings Directory!",
-                                                     "You still have not chosen the settings directory for Batch-Tint,\n"
-                                                     "please choose it now.\n",
-                                                     QtGui.QMessageBox.Ok | QtGui.QMessageBox.Abort)
-            while self.choice == '':
-                time.sleep(0.5)
-
-            if self.choice == QtGui.QMessageBox.Ok:
-                self.new_settings_directory()
-            else:
-                return
-
-        elif 'DefaultTintSettings' in error_val:
-            self.choice = QtGui.QMessageBox.question(self, "No Batch-Tint Settings Directory!",
-                                                     "You still have not chosen the settings directory for Batch-Tint,\n"
-                                                     "Do you want to try with the default batch-tint settings?\n",
-                                                     QtGui.QMessageBox.Yes, QtGui.QMessageBox.Abort)
-
-        elif 'InvalidTintSettings' in error_val:
-            self.choice = QtGui.QMessageBox.question(self, "Invalid Batch-Tint Settings file!",
-                                                     "You chose an invalid Batch-Tint settings directory,\n"
-                                                     "Do you want to choose another directory?\n"
-                                                     "Note: Press Default to use the default Batch-Tint Settings!",
-                                                     QtGui.QMessageBox.Yes, QtGui.QMessageBox.Default | QtGui.QMessageBox.Abort)
-
-            if self.choice == QtGui.QMessageBox.Yes:
-                self.new_settings_directory()
-            else:
-                return
+        elif 'LargeOverlap' in error_val:
+            self.choice = QtGui.QMessageBox.question(self, "Invalid Overlap Too Large",
+                                                     "Your overlap size needs to be less than the Chunk Size!",
+                                                     QtGui.QMessageBox.Ok)
 
     def close_app(self):
 
@@ -357,6 +352,9 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
             if 'Converted' in directory or 'Processed' in directory:
                 continue
 
+            if directory == self.current_directory:
+                continue
+
             if directory in added_directories:
                 # the directory has already been added, skip
                 continue
@@ -367,18 +365,20 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
             self.sessions = self.FindSessions(os.path.join(self.directory, directory))
 
             # add the sessions to the TreeWidget
+
+            if self.sessions is None:
+                # possible that a file not found error caused the self.sessions to be equal to None
+                continue
+
             for session in self.sessions:
 
-                if session in self.analyzed_files:
-                    continue
+                #if session in self.analyzed_files:
+                #    continue
 
                 if isinstance(session, str):
                     session = [session]  # needs to be a list for the sorted()[] line
 
                 tint_basename = os.path.basename(os.path.splitext(sorted(session, reverse=False)[0])[0])
-
-                if session == self.current_session:
-                    continue
 
                 # only adds the sessions that haven't been added already
 
@@ -388,6 +388,13 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
                 # directory_item.addChild(session_item)
 
                 for file in session:
+
+                    if file in self.analyzed_files:
+                        continue
+
+                    if file in self.current_session:
+                        continue
+
                     session_file_item = QtGui.QTreeWidgetItem()
                     session_file_item.setText(0, file)
                     session_item.addChild(session_file_item)
@@ -396,13 +403,15 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
 
                     extensions = get_eeg_extensions(os.path.join(self.directory, directory, file))
 
-                    for ext in extensions:
-                        if ext not in self.extensions:
-                            self.extensions.append(ext)
+                    if extensions:
+                        # there is a possibility that this value will be equal to None (if file doesn't exist)
+                        for ext in extensions:
+                            if ext not in self.extensions:
+                                self.extensions.append(ext)
 
-                            extension_item = QtGui.QTreeWidgetItem()
-                            extension_item.setText(0, ext)
-                            self.eeg_types.addTopLevelItem(extension_item)
+                                extension_item = QtGui.QTreeWidgetItem()
+                                extension_item.setText(0, ext)
+                                self.eeg_types.addTopLevelItem(extension_item)
 
             if directory_item.childCount() != 0:
                 # makes sure that it only adds sessions that have sessions to process
@@ -445,6 +454,42 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
             self.StopProcessing()
             return
 
+        if len(self.eeg_types.selectedItems()) == 0:
+            self.LogError.myGUI_signal.emit('NoEEGType')
+            self.StopProcessing()
+            return
+
+        try:
+            chunk_size = float(self.chunk_size.text())
+
+            if chunk_size <= 0:
+                self.LogError.myGUI_signal.emit('ChunkInvalid')
+                self.StopProcessing()
+                return
+
+        except ValueError:
+            self.LogError.myGUI_signal.emit('ChunkInvalid')
+            self.StopProcessing()
+            return
+
+        try:
+            chunk_overlap = float(self.chunk_overlap.text())
+
+            if chunk_overlap < 0:
+                self.LogError.myGUI_signal.emit('OverlapInvalid')
+                self.StopProcessing()
+                return
+
+            elif chunk_overlap >= chunk_size:
+                self.LogError.myGUI_signal.emit('LargeOverlap')
+                self.StopProcessing()
+                return
+
+        except ValueError:
+            self.LogError.myGUI_signal.emit('OverlapInvalid')
+            self.StopProcessing()
+            return
+
         if self.recording_queue.topLevelItemCount() == 0:
             pass
 
@@ -464,8 +509,10 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
                         time.sleep(0.1)
                     continue
 
-            # ProcessSession(self, self.session_item.data(0, 0), self.parameters)
-            ProcessSession(self, self.session_item.data(0, 0))
+            if self.session_item.data(0, 0) != self.current_directory:
+
+                # ProcessSession(self, self.session_item.data(0, 0), self.parameters)
+                ProcessSession(self, self.session_item.data(0, 0), chunk_size, chunk_overlap)
 
     def StopProcessing(self):
         self.process_button.setText('Process')
@@ -488,8 +535,11 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
     def FindSessions(self, directory):
         """This function will find the sessions"""
 
-        directory_file_list = os.listdir(
-            directory)  # making a list of all files within the specified directory
+        try:
+            directory_file_list = os.listdir(
+                directory)  # making a list of all files within the specified directory
+        except FileNotFoundError:
+            return
 
         set_filenames = []
 
@@ -633,14 +683,11 @@ def center(self):
     self.move(frameGm.topLeft())
 
 
-def ProcessSession(main_window, directory):
-
-    if 'Choose a Directory!' in directory:
-        main_window.LogError.myGUI_signal.emit('NoDir')
+def ProcessSession(main_window, directory, chunk_size, chunk_overlap):
 
     """This function will take in a session files and then process the files associated with this session"""
 
-    main_window.current_session = directory
+    # main_window.current_session = directory
 
     # remove the appropriate session from the TreeWidget
     iterator = QtGui.QTreeWidgetItemIterator(main_window.recording_queue)
@@ -682,20 +729,22 @@ def ProcessSession(main_window, directory):
                 set_fname = main_window.child_session.child(child_count).data(0, 0)
 
         set_filename = os.path.join(main_window.directory, directory, set_fname)
-        processed = process_basename(main_window, set_filename)
 
-        main_window.child_taken = False
-        main_window.RemoveSessionItem.myGUI_signal.emit(str(0))
-        while not main_window.child_taken:
-            time.sleep(0.1)
-        main_window.child_session = None
+        if set_fname != main_window.current_session or set_fname not in main_window.analyzed_files:
 
-        if main_window.item.childCount() == 0:
-            # main_window.recording_queue.takeTopLevelItem(item_count)
-            main_window.top_level_taken = False
-            main_window.RemoveQueueItem.myGUI_signal.emit(str(item_count))
-            while not main_window.top_level_taken:
+            processed = process_basename(main_window, set_filename, chunk_size, chunk_overlap)
+
+            main_window.child_taken = False
+            main_window.RemoveSessionItem.myGUI_signal.emit(str(0))
+            while not main_window.child_taken:
                 time.sleep(0.1)
+            main_window.child_session = None
+
+            if main_window.item.childCount() == 0:
+                main_window.top_level_taken = False
+                main_window.RemoveQueueItem.myGUI_signal.emit(str(item_count))
+                while not main_window.top_level_taken:
+                    time.sleep(0.1)
 
 
 def run():

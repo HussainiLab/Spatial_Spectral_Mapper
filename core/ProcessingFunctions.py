@@ -1,9 +1,6 @@
-import datetime
 from core.Tint_Matlab import *
-import os, datetime
+import os
 import numpy as np
-import matplotlib.pylab as plt
-import matplotlib
 from scipy import signal, interpolate, fftpack
 import scipy
 import numpy as np
@@ -11,7 +8,6 @@ from pyfftw.interfaces import scipy_fftpack as fftw
 import mmap
 import contextlib
 import core.SignalProcessing as sp
-import webcolors
 import datetime
 import h5py
 
@@ -71,10 +67,11 @@ def get_file_parameter(parameter, filename):
                         return ' '.join(new_line[1:])
 
 
-def process_basename(self, set_filename):
+def process_basename(self, set_filename, chunk_size, chunk_overlap):
     """This function will convert the .bin file to the TINT format"""
 
     self.analyzed_files.append(os.path.basename(set_filename))
+    self.current_session = os.path.basename(set_filename)
 
     frequency_boundaries = {
         'Delta': np.array([1, 3]),
@@ -89,8 +86,9 @@ def process_basename(self, set_filename):
     }
 
     directory = os.path.dirname(set_filename)
+    self.current_directory = os.path.basename(directory)
 
-    tint_basename = os.path.basename(os.path.splitext(set_filename)[0])
+    # tint_basename = os.path.basename(os.path.splitext(set_filename)[0])
     # pos_filename = '%s.pos' % os.path.splitext(tint_basename)[0]
 
     # get eeg files
@@ -102,6 +100,13 @@ def process_basename(self, set_filename):
         '[%s %s]: Analyzing files in the following directory: %s!' %
         (str(datetime.datetime.now().date()),
          str(datetime.datetime.now().time())[:8], directory))
+
+    if eeg_files is None:
+        self.LogAppend.myGUI_signal.emit(
+            '[%s %s]: This filename does not have any selected EEG/EGF files: %s!' %
+            (str(datetime.datetime.now().date()),
+             str(datetime.datetime.now().time())[:8], set_filename))
+        return
 
     for filename in eeg_files:
 
@@ -116,18 +121,23 @@ def process_basename(self, set_filename):
             (str(datetime.datetime.now().date()),
              str(datetime.datetime.now().time())[:8], filename))
 
-        spectro_ds, total_power, f_peak, t_axis3, freqs3, band_order, Fs = get_st(filename, frequency_boundaries,
+        try:
+            spectro_ds, total_power, f_peak, t_axis, freqs, band_order, Fs = get_st(self, filename, frequency_boundaries,
                                                                                       notch=60, f_min=1, f_max=500,
                                                                                       add_zero_freq=True,
-                                                                                      output='downsample', chunk_size=5,
-                                                                                      chunk_overlap=10)
-        self.LogAppend.myGUI_signal.emit(
-            '[%s %s]: Saving output as the following filename: %s!' %
-            (str(datetime.datetime.now().date()),
-             str(datetime.datetime.now().time())[:8], get_output_filename(filename)))
+                                                                                      output='downsample',
+                                                                                      chunk_size=chunk_size,
+                                                                                      chunk_overlap=chunk_overlap)
+            self.LogAppend.myGUI_signal.emit(
+                '[%s %s]: Saving output as the following filename: %s!' %
+                (str(datetime.datetime.now().date()),
+                 str(datetime.datetime.now().time())[:8], get_output_filename(filename)))
 
-        save_spatialSpectro(get_output_filename(filename), spectro_ds, total_power, f_peak, band_order,
-                            frequency_boundaries, Fs)
+            save_spatialSpectro(get_output_filename(filename), spectro_ds, total_power, f_peak, band_order,
+                                frequency_boundaries, Fs)
+        except TypeError:
+            # this will happen when get_st returns nothing (quit early)
+            continue
 
 
 def get_eeg_files(set_filename):
@@ -136,10 +146,13 @@ def get_eeg_files(set_filename):
 
     directory = os.path.dirname(set_filename)
 
-    dir_files = os.listdir(directory)
+    try:
+        dir_files = os.listdir(directory)
+    except FileNotFoundError:
+        return
 
     return [os.path.join(directory, file) for file in dir_files if 'eeg' in os.path.splitext(file)[-1] or
-            'egf' in os.path.splitext(file)[-1]]
+            'egf' in os.path.splitext(file)[-1] if os.path.splitext(os.path.basename(set_filename))[0] in file]
 
 
 def matching_ind(haystack, needle):
@@ -283,15 +296,21 @@ def get_output_filename(filename):
     # figure out what the extension is
     extension = os.path.splitext(filename)[-1]
 
-    return os.path.join(os.path.dirname(filename), 'spatialSpectral',
-                        '%s_%s.h5' % (os.path.basename(os.path.splitext(filename)[0]), extension[1:]))
+    tint_basename = os.path.basename(os.path.splitext(filename)[0])
+
+    return os.path.join(os.path.dirname(filename), 'spatialSpectral', tint_basename,
+                        '%s_%s.h5' % (tint_basename, extension[1:]))
 
 
 def get_eeg_extensions(set_filename):
     """This will return the eeg extensions"""
     eeg_filenames = get_eeg_files(set_filename)
-    return [os.path.splitext(file)[-1] for file in eeg_filenames
-            if not os.path.exists(get_output_filename(file))]
+    try:
+        return [os.path.splitext(file)[-1] for file in eeg_filenames
+                if not os.path.exists(get_output_filename(file)) if file is not None]
+    except TypeError:
+        """If there is a file does not exist it will return a none"""
+        return
 
 
 def conj_nonzeros(X):
@@ -425,8 +444,8 @@ def find_f_peak(spectrogram, freqs):
     return F_peak.flatten()
 
 
-def get_st(filename, frequency_boundaries, notch=60, f_min=0, f_max=500, output_Fs=1, SquaredMagnitude=True,
-            add_zero_freq=False, chunk_size=10, output='downsample', chunk_overlap=25):
+def get_st(self, filename, frequency_boundaries, notch=60, f_min=0, f_max=500, output_Fs=1, SquaredMagnitude=True,
+            add_zero_freq=False, chunk_size=10, chunk_overlap=25, output='downsample'):
     """In some cases we will have files that are too long to at once, this function will break up
     the data into chunks and then downsample the frequency data into it's appropriate frequency bands
     as this will significantly decrease the memory usage (and is ultimately what we want anyways)
@@ -454,14 +473,26 @@ def get_st(filename, frequency_boundaries, notch=60, f_min=0, f_max=500, output_
 
     chunk_size: this is a size value the represents how many seconds of data you want to have analyzed per chunk
 
+    chunk_overlap: the amount of overlap (half from the front, and half from the end)
 
     output: this will determine which output we want, if it is equal to 'downsample' we will not have the entire
     frequency range of values we will only have one value per frequency boundary. if output='power', we will have
     one value per frequency between f_min and f_max
     """
 
-    chunk_overlap = int(chunk_overlap)
-    chunk_size = int(chunk_size)
+    if chunk_overlap >= chunk_size:
+        self.LogAppend.myGUI_signal.emit(
+            '[%s %s]: Chunk Overlap is too large, must be less than chunk_size!' %
+            (str(datetime.datetime.now().date()),
+             str(datetime.datetime.now().time())[:8]))
+        return
+
+    if os.path.exists(get_output_filename(filename)):
+        self.LogAppend.myGUI_signal.emit(
+            '[%s %s]: The output for this file already exists, skipping: %s!' %
+            (str(datetime.datetime.now().date()),
+             str(datetime.datetime.now().time())[:8], filename))
+        return
 
     with open(filename, 'rb') as f:
 
@@ -501,7 +532,7 @@ def get_st(filename, frequency_boundaries, notch=60, f_min=0, f_max=500, output_
                                            automatic=0, filttype='butter', showresponse=0)
 
                 # downsample the data so it only is 1.2 kHz instead of 4.8kHz
-                m = m[0::int(recorded_Fs / Fs)]
+                m = m[0::int(downsamp_factor)]
 
             m = sp.Filtering().dcblock(m, 0.1, Fs)  # removes DC Offset
 
@@ -510,8 +541,10 @@ def get_st(filename, frequency_boundaries, notch=60, f_min=0, f_max=500, output_
 
             n_samples = int(len(m))
 
-            concurrent_samples = int(chunk_size * Fs)  # samples that we will analyze per chunk
-            # concurrent_samples = int(n_samples / iterations)
+            chunk_overlap = int(chunk_overlap * Fs)  # converting from seconds to samples
+            chunk_size = int(chunk_size * Fs)  # converting from seconds to samples
+
+            concurrent_samples = chunk_size  # samples that we will analyze per chunk
 
             if output == 'downsample':
                 spectro_ds = np.zeros(
@@ -539,18 +572,19 @@ def get_st(filename, frequency_boundaries, notch=60, f_min=0, f_max=500, output_
                 if index_stop > max_index:
                     index_stop = max_index
                     index_start = max_index - concurrent_samples
-                '''
-                percent_bool = np.where(index_stop/max_index >= percentages)[0]
+
+                percent_bool = np.where(index_stop / max_index >= percentages)[0]
                 if len(percent_bool) >= 1:
-                    print('%d percent complete' % (int(100*percentages[percent_bool[-1]])))
+                    self.LogAppend.myGUI_signal.emit(
+                        '[%s %s]: %d percent complete for the following file: %s!' %
+                        (str(datetime.datetime.now().date()),
+                         str(datetime.datetime.now().time())[:8], (int(100 * percentages[percent_bool[-1]])), filename))
+
                     try:
                         percentages = percentages[percent_bool[-1] + 1:]
                     except IndexError:
                         percentages = np.array([])
-                    # percentages = percentages[1:]
-                '''
-                # current_indices = [concurrent_bytes*(i), concurrent_bytes*(i+1)]
-                # current_indices = [index_start*index_to_byte, index_stop*index_to_byte]
+
                 current_indices = [index_start, index_stop]
 
                 data = m[current_indices[0]:current_indices[1]]
@@ -650,7 +684,6 @@ def get_st(filename, frequency_boundaries, notch=60, f_min=0, f_max=500, output_
     if output == 'power':
         t_axis = np.arange(power_all.shape[1]) / Fs
         return power_all, t_axis, freqs
-
     else:
         t_axis = np.arange(spectro_ds.shape[1]) / Fs
         return spectro_ds, total_power, f_peak, t_axis, freqs, band_order, Fs
