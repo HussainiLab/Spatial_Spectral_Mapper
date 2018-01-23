@@ -258,10 +258,10 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
         self.analyzed_files = []
 
         if self.chunk_size.text() == '':
-            self.chunk_size.setText('30')
+            self.chunk_size.setText('5')
 
         if self.chunk_overlap.text() == '':
-            self.chunk_overlap.setText('1.2')
+            self.chunk_overlap.setText('4')
 
         self.recording_queue.clear()
         self.eeg_types.clear()
