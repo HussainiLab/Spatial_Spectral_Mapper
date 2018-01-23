@@ -401,17 +401,19 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
                                  linestyles='dashed')
 
     if self.spectroGraphColorbar is not None:
-        self.spectroGraphColorbar.update_normal(plot)
+        pass  # this won't be changed since it will be normalized to 1
+        # self.spectroGraphColorbar.update_normal(plot)
     else:
         self.spectroGraphColorbar = self.spectroGraph.colorbar(plot, ax=self.spectroGraphAxis)
 
     self.spectroGraphAxis.set_xlabel('Seconds (s)')
-    self.spectroGraphCanvas.draw()
+
 
     ####### plotting the position bins ###############
     self.position_binsGraphAxis.clear()
     plot_map_labels(posx_interp, posy_interp, labels, ax=self.position_binsGraphAxis)
-    plt.plot(posx_interp, posy_interp, "k-", alpha=0.2)
+    # plt.plot(posx_interp, posy_interp, "k-", alpha=0.2)
+    plt.plot(posx, posy, "k-", alpha=0.2)
 
     self.position_binsGraphAxis.vlines(self.x_ticks, np.min(self.posy_interp), np.max(self.posy_interp),
                                        linestyles='dashed')
@@ -419,7 +421,6 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
                                        linestyles='dashed')
     self.position_binsGraphAxis.set_xlabel('X-Position (cm)')
     self.position_binsGraphAxis.set_ylabel('Y-Position (cm)')
-    self.position_binsGraphCanvas.draw()
 
     # producing spectral map
 
@@ -434,19 +435,19 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
     # C = create_colormap(color_dict, np.nanmin(spatialMap_peak), np.ceil(np.nanmax(spatialMap_peak)))
     peak_plot = self.PeakFreqGraphAxis.imshow(spatialMap_peak, aspect='auto', cmap=cm1, norm=norm,
                                               extent=self.extent_vals)
-    self.PeakFreqGraphAxis.plot(posx_interp, posy_interp, "k-", alpha=0.3)
+    # self.PeakFreqGraphAxis.plot(posx_interp, posy_interp, "k-", alpha=0.3)
+    self.PeakFreqGraphAxis.plot(posx, posy, "k-", alpha=0.3)  # this has less data than the posx_interp, so should be easier to plot
     self.PeakFreqGraphAxis.set_title("Peak Frequencies")
 
     if self.PeakFreqGraphColorbar is not None:
-        self.PeakFreqGraphColorbar.update_normal(peak_plot)
+        pass  # this won't be changed since it will be normalized to 500
+        # self.PeakFreqGraphColorbar.update_normal(peak_plot)
     else:
         self.PeakFreqGraphColorbar = self.PeakFreqGraph.colorbar(peak_plot, ax=self.PeakFreqGraphAxis,
                                                                  ticks=colorbar_ticks)
 
     self.PeakFreqGraphAxis.set_xlabel('X-Position (cm)')
     self.PeakFreqGraphAxis.set_ylabel('Y-Position (cm)')
-
-    self.PeakFreqGraphCanvas.draw()
 
     # producing subplots that show band percentages within each bin
 
@@ -463,15 +464,19 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
         ax.clear()
 
         if ax == self.band_percGraphAxis[0, 0]:
-
-            velocity_plot = ax.imshow(velocity_spectroMap, aspect='auto', cmap='jet',
+            norm_vel = matplotlib.colors.Normalize(vmin=0, vmax=np.nanmax(velocity_spectroMap))
+            velocity_plot = ax.imshow(velocity_spectroMap, aspect='auto', cmap='jet', norm=norm_vel,
                                                                  extent=self.extent_vals)
-            ax.plot(posx_interp, posy_interp, "k-", alpha=0.3)
+            # ax.plot(posx_interp, posy_interp, "k-", alpha=0.3)
+            ax.plot(posx, posy, "k-", alpha=0.3)  # this has less data than the posx_interp, so should be easier to plot
             ax.set_title("Speed (cm/s)")
 
             if len(self.bandpercGraphColorbar) == 10:
                 current_colorbar = self.bandpercGraphColorbar[0]
-                current_colorbar.update_normal(velocity_plot)
+                # current_colorbar.update_normal(velocity_plot)
+                # velocity_plot.set_clim([0, np.nanmax(velocity_spectroMap)])
+                current_colorbar.set_clim([0, np.nanmax(velocity_spectroMap)])
+                current_colorbar.draw_all()
             else:
                 current_colorbar = self.band_percGraph.colorbar(velocity_plot, ax=self.band_percGraphAxis[0, 0])
                 self.bandpercGraphColorbar.append(current_colorbar)
@@ -481,18 +486,23 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
         current_freqs = self.frequency_boundaries[band_name]
         current_spectroMap = spatialSpectroMap(spectro_ds[band, :], posx_interp, posy_interp, labels, geometry)
         peak_plot = ax.imshow(current_spectroMap, aspect='auto', cmap='jet', norm=norm, extent=self.extent_vals)
-        ax.plot(posx_interp, posy_interp, "k-", alpha=0.3)
+        # ax.plot(posx_interp, posy_interp, "k-", alpha=0.3)
+        ax.plot(posx, posy, "k-", alpha=0.3)  # this has less data than the posx_interp, so should be easier to plot
         ax.set_title("%s (%d Hz - %d Hz)" % (band_name, current_freqs[0], current_freqs[1]))
         #ax.set_xlabel('X-Position (cm)')
         #ax.set_ylabel('Y-Position (cm)')
         if len(self.bandpercGraphColorbar) == 10:
-            current_colorbar = self.bandpercGraphColorbar[band + 1]
-            current_colorbar.update_normal(peak_plot)
+            pass  # this won't be changed since it will be normalized to 1
+            # current_colorbar = self.bandpercGraphColorbar[band + 1]
+            # current_colorbar.update_normal(peak_plot)
         else:
             current_colorbar = self.band_percGraph.colorbar(peak_plot, ax=ax)
             self.bandpercGraphColorbar.append(current_colorbar)
 
+    self.PeakFreqGraphCanvas.draw()
+    self.spectroGraphCanvas.draw()
     self.band_percGraphCanvas.draw()
+    self.position_binsGraphCanvas.draw()
 
     self.previous_t_start = current_start
     self.previous_t_stop = current_stop

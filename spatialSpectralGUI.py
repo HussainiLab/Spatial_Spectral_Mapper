@@ -360,7 +360,7 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
                 time.sleep(0.1)
                 continue
 
-            if current_start == self.previous_t_start and current_stop == self.previous_t_stop:
+            if np.float32(current_start) == np.float32(self.previous_t_start) and np.float32(current_stop) == np.float32(self.previous_t_stop):
                 """This is the current graph, skip"""
                 time.sleep(0.1)
                 continue
@@ -433,15 +433,21 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
 
     def initialize_parameters(self):
 
+        if self.run_btn.text() != 'Run':
+            self.stop_analysis()
+
         self.labels = None
         self.spectro_ydotted = None
         self.spectro_yticks = None
 
         # self.geometry_rows.setText('32')
         # self.geometry_cols.setText('32')
-        self.bandpercGraphColorbar = []
-        self.PeakFreqGraphColorbar = None
-        self.spectroGraphColorbar = None
+        if not hasattr(self, 'bandpercGraphColorbar'):
+            self.bandpercGraphColorbar = []
+        if not hasattr(self, 'PeakFreqGraphColorbar'):
+            self.PeakFreqGraphColorbar = None
+        if not hasattr(self, 'spectroGraphColorbar'):
+            self.spectroGraphColorbar = None
 
         self.current_start = None
         self.current_stop = None
@@ -510,8 +516,12 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         """this checks if the parameters have changed since the last run"""
         # current_start = self.current_start
         # current_stop = self.current_stop
-        current_start = float(self.t_start.text())
-        current_stop = float(self.t_stop.text())
+        try:
+            current_start = float(self.t_start.text())
+            current_stop = float(self.t_stop.text())
+        except ValueError:
+            return False
+
         current_geometry = self.get_geometry()
         current_arena = self.arena.currentText()
 
@@ -578,11 +588,21 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
             self.run_btn.clicked.disconnect()
             self.run_btn.clicked.connect(self.stop_analysis)
 
-            self.analyze_thread = QtCore.QThread()
-            self.analyze_thread.start()
             if not self.data_loaded:
+                self.analyze_thread = QtCore.QThread()
+                self.analyze_thread.start()
                 self.analyze_thread_worker = Worker(Analyze, self, current_start=0, current_stop=None)
             else:
+
+                current_start = float(self.t_start.text())
+                current_stop = float(self.t_stop.text())
+
+                if np.float32(current_start) == np.float32(self.previous_t_start) and np.float32(
+                        current_stop) == np.float32(self.previous_t_stop):
+                    return ''
+                self.analyze_thread = QtCore.QThread()
+                self.analyze_thread.start()
+
                 self.analyze_thread_worker = Worker(Analyze, self, current_start=float(self.t_start.text()),
                                                     current_stop=float(self.t_stop.text()))
             self.analyze_thread_worker.moveToThread(self.analyze_thread)
@@ -605,6 +625,7 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
         except AttributeError:
             pass
 
+        # self.analyzing = False
         self.run_btn.setToolTip('Click to start analysis.')  # defining the tool tip for the start button
 
     def close_app(self):
