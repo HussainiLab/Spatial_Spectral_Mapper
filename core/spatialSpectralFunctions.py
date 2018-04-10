@@ -338,7 +338,7 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
         posy = posy[nonNanValues]
 
         # box car smoothing, closest we could get to replicating Tint's speeds
-        B = np.ones((int(np.ceil(0.4 * 50)), 1)) / np.ceil(0.4 * 50)
+        B = np.ones((int(np.ceil(0.4 * Fs_pos)), 1)) / np.ceil(0.4 * Fs_pos)
 
         posx = scipy.ndimage.correlate(posx, B, mode='nearest')
         posy = scipy.ndimage.correlate(posy, B, mode='nearest')
