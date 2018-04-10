@@ -319,7 +319,7 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
         pos_filename = get_filename(filename, 'pos')
         arena = self.arena.currentText()
 
-        posx, posy, post = getpos(pos_filename, arena)  # getting the mouse position
+        posx, posy, post, Fs_pos = getpos(pos_filename, arena)  # getting the mouse position
 
         # centering the positions
         center = centerBox(posx, posy)
