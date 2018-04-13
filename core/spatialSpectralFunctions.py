@@ -8,7 +8,7 @@ import scipy
 from pyfftw.interfaces import scipy_fftpack as fftw
 import mmap
 import contextlib
-import core.SignalProcessing as sp
+import core.filtering as filt
 import webcolors
 import h5py
 

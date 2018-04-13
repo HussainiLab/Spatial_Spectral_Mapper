@@ -7,7 +7,7 @@ import numpy as np
 from pyfftw.interfaces import scipy_fftpack as fftw
 import mmap
 import contextlib
-import core.SignalProcessing as sp
+import core.filtering as filt
 import datetime
 import h5py
 
@@ -528,16 +528,16 @@ def get_st(self, filename, frequency_boundaries, notch=60, f_min=0, f_max=500, o
                 m, scalar = bits2uV(m, filename)
 
                 # filter before downsampling to avoid anti-aliasing
-                m = sp.Filtering().iirfilt(bandtype='low', data=m, Fs=recorded_Fs, Wp=Fs, order=6,
+                m = filt.Filtering().iirfilt(bandtype='low', data=m, Fs=recorded_Fs, Wp=Fs, order=6,
                                            automatic=0, filttype='butter', showresponse=0)
 
                 # downsample the data so it only is 1.2 kHz instead of 4.8kHz
                 m = m[0::int(downsamp_factor)]
 
-            m = sp.Filtering().dcblock(m, 0.1, Fs)  # removes DC Offset
+            m = filt.Filtering().dcblock(m, 0.1, Fs)  # removes DC Offset
 
             # removes 60 (or 50 Hz)
-            m = sp.Filtering().notch_filt(m, Fs, freq=notch, band=10, order=3)
+            m = filt.Filtering().notch_filt(m, Fs, freq=notch, band=10, order=3)
 
             n_samples = int(len(m))
 
@@ -719,16 +719,16 @@ def get_average(filename, Fs, notch):
                 m, scalar = bits2uV(m, filename)
 
                 # filter before downsampling to avoid anti-aliasing
-                m = sp.Filtering().iirfilt(bandtype='low', data=m, Fs=recorded_Fs, Wp=Fs, order=6,
+                m = filt.Filtering().iirfilt(bandtype='low', data=m, Fs=recorded_Fs, Wp=Fs, order=6,
                                            automatic=0, filttype='butter', showresponse=0)
 
                 # downsample the data so it only is 1.2 kHz instead of 4.8kHz
                 m = m[0::int(recorded_Fs / Fs)]
 
-            m = sp.Filtering().dcblock(m, 0.1, Fs)  # removes DC Offset
+            m = filt.Filtering().dcblock(m, 0.1, Fs)  # removes DC Offset
 
             # removes 60 (or 50 Hz)
-            m = sp.Filtering().notch_filt(m, Fs, freq=notch, band=10, order=3)
+            m = filt.Filtering().notch_filt(m, Fs, freq=notch, band=10, order=3)
 
     return np.mean(m)
 
