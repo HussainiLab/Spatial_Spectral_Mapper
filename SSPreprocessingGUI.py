@@ -520,7 +520,14 @@ class Window(QtGui.QWidget):  # defines the window class (main window)
         self.process_button.clicked.disconnect()
         self.process_button.clicked.connect(self.Process)
 
-        self.process_thread.quit()
+        # self.process_thread.quit()
+        self.process_thread.terminate()
+
+        self.LogAppend.myGUI_signal.emit(
+            '[%s %s]: Terminated processing!' %
+            (str(datetime.datetime.now().date()),
+             str(datetime.datetime.now().time())[:8]))
+
         self.processing = False
 
     def FindSessionsRepeat(self):

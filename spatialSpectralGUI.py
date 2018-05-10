@@ -620,8 +620,15 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
 
         # self.run_thread.deleteLater()
         try:
-            self.run_thread.quit()
-            self.analyze_thread.quit()
+            # self.run_thread.quit()
+            self.run_thread.terminate()
+            # self.analyze_thread.quit()
+            self.analyze_thread.terminate()
+            '''
+            self.LogAppend.myGUI_signal.emit(
+                '[%s %s]: Conversion terminated!' %
+                (str(datetime.datetime.now().date()),
+                 str(datetime.datetime.now().time())[:8]))'''
         except AttributeError:
             pass
 
