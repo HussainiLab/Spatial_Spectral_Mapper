@@ -339,9 +339,10 @@ def spatialSpectroAnalyze(self, current_start=0, current_stop=None):
 
         # box car smoothing, closest we could get to replicating Tint's speeds
         B = np.ones((int(np.ceil(0.4 * Fs_pos)), 1)) / np.ceil(0.4 * Fs_pos)
-
-        posx = scipy.ndimage.correlate(posx, B, mode='nearest')
-        posy = scipy.ndimage.correlate(posy, B, mode='nearest')
+        # posx = scipy.ndimage.correlate(posx, B, mode='nearest')
+        posx = scipy.ndimage.convolve(posx, B, mode='nearest')
+        # posy = scipy.ndimage.correlate(posy, B, mode='nearest')
+        posy = scipy.ndimage.convolve(posy, B, mode='nearest')
 
         # interpolating the positions so there's one position per time value
 
