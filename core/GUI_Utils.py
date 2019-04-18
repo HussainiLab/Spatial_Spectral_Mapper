@@ -2,25 +2,23 @@ import os
 from PyQt4 import QtGui, QtCore
 import matplotlib
 matplotlib.use('QT4Agg')
-from core.Tint_Matlab import *
 
 
 def background(self):  # defines the background for each window
     """providing the background info for each window"""
     # Acquiring information about geometry
     self.PROJECT_DIR = os.path.dirname(os.path.abspath("__file__"))  # project directory
-    self.IMG_DIR = os.path.join(self.PROJECT_DIR, 'img')  # image directory
-    self.CORE_DIR = os.path.join(self.PROJECT_DIR, 'core')  # core directory
-    self.SETTINGS_DIR = os.path.join(self.PROJECT_DIR, 'settings')  # settings directory
+    self.CORE_DIR = os.path.join(self.PROJECT_DIR, 'core')
+    self.SETTINGS_DIR = os.path.join(self.PROJECT_DIR, 'settings')
     if not os.path.exists(self.SETTINGS_DIR):
         os.mkdir(self.SETTINGS_DIR)
-
+    self.IMG_DIR = os.path.join(self.PROJECT_DIR, 'img')
     self.setWindowIcon(QtGui.QIcon(os.path.join(self.IMG_DIR, 'cumc-crown.png')))  # declaring the icon image
-    self.deskW, self.deskH = QtGui.QDesktopWidget().availableGeometry().getRect()[2:] #gets the window resolution
+    self.deskW, self.deskH = QtGui.QDesktopWidget().availableGeometry().getRect()[2:]  # gets the window resolution
     # self.setWindowState(QtCore.Qt.WindowMaximized) # will maximize the GUI
-    self.setGeometry(0, 0, self.deskW/2, self.deskH/1.5)  # Sets the window size, 800x460 is the size of our window
+    self.setGeometry(0, 0, self.deskW*0.9, self.deskH*0.9)  # Sets the window size, 800x460 is the size of our window
 
-    QtGui.QApplication.setStyle(QtGui.QStyleFactory.create('Cleanlooks'))
+    QtGui.QApplication.setStyle(QtGui.QStyleFactory.create('GTK+'))
 
 
 class Worker(QtCore.QObject):

@@ -1,4 +1,4 @@
-from core.Tint_Matlab import *
+from core.Tint_Matlab import speed2D, remBadTrack, getpos, centerBox, ReadEEG
 import os, datetime, time
 import numpy as np
 import matplotlib.pylab as plt

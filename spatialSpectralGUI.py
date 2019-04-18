@@ -3,44 +3,9 @@ import sys, os, time, datetime, functools
 from PIL import Image
 from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
-from core.spatialSpectralFunctions import *
-
-
-class Worker(QtCore.QObject):
-    '''This worker object will act to ensure that the QThreads are not within the Main Thread'''
-    # def __init__(self, main_window, thread):
-    def __init__(self, function, *args, **kwargs):
-        '''takes in a function, and the arguments and keyword arguments for that function'''
-        super(Worker, self).__init__()
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
-        self.start.connect(self.run)
-        self.running = True
-
-    start = QtCore.pyqtSignal(int)
-
-    @QtCore.pyqtSlot()
-    def run(self):
-        self.function(*self.args, **self.kwargs)
-        self.running = False
-
-
-def background(self):  # defines the background for each window
-    """providing the background info for each window"""
-    # Acquiring information about geometry
-    self.PROJECT_DIR = os.path.dirname(os.path.abspath("__file__"))  # project directory
-    self.CORE_DIR = os.path.join(self.PROJECT_DIR, 'core')
-    self.SETTINGS_DIR = os.path.join(self.PROJECT_DIR, 'settings')
-    if not os.path.exists(self.SETTINGS_DIR):
-        os.mkdir(self.SETTINGS_DIR)
-    self.IMG_DIR = os.path.join(self.PROJECT_DIR, 'img')
-    self.setWindowIcon(QtGui.QIcon(os.path.join(self.IMG_DIR, 'cumc-crown.png')))  # declaring the icon image
-    self.deskW, self.deskH = QtGui.QDesktopWidget().availableGeometry().getRect()[2:]  # gets the window resolution
-    # self.setWindowState(QtCore.Qt.WindowMaximized) # will maximize the GUI
-    self.setGeometry(0, 0, self.deskW*0.9, self.deskH*0.9)  # Sets the window size, 800x460 is the size of our window
-
-    QtGui.QApplication.setStyle(QtGui.QStyleFactory.create('GTK+'))
+from core.spatialSpectralFunctions import spatialSpectroAnalyze
+from core.GUI_Utils import Worker, background, center
+import numpy as np
 
 
 class MainWindow(QtGui.QWidget):  # defines the window class (main window)
@@ -365,10 +330,6 @@ class MainWindow(QtGui.QWidget):  # defines the window class (main window)
                 time.sleep(0.1)
                 continue
 
-            #if current_stop - current_start != float(self.slice_size.text()):
-            #    """The values don't match up yet, probably still updating, skip"""
-            #    continue
-
             error = self.analyze()  # re-create the graphs
             if 'Abort' in error:
                 break
@@ -669,15 +630,6 @@ class Communicate(QtCore.QObject):
     '''A custom pyqtsignal so that errors and popups can be called from the threads
     to the main window'''
     myGUI_signal = QtCore.pyqtSignal(str)
-
-
-def center(self):
-    """A function that centers the window on the screen"""
-    frameGm = self.frameGeometry()
-    screen = QtGui.QApplication.desktop().screenNumber(QtGui.QApplication.desktop().cursor().pos())
-    centerPoint = QtGui.QApplication.desktop().screenGeometry(screen).center()
-    frameGm.moveCenter(centerPoint)
-    self.move(frameGm.topLeft())
 
 
 def run():

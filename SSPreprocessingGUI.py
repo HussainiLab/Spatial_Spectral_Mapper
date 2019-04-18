@@ -1,6 +1,6 @@
 import sys, shutil, os, datetime, time
 from PyQt4 import QtCore, QtGui
-from core.ProcessingFunctions import *
+from core.ProcessingFunctions import has_files, get_eeg_extensions, is_processed, process_basename
 from distutils.dir_util import copy_tree
 
 _author_ = "Geoffrey Barrett"  # defines myself as the author

@@ -1,4 +1,4 @@
-from core.Tint_Matlab import *
+from core.Tint_Matlab import bits2uV
 import os
 import numpy as np
 from scipy import signal, interpolate, fftpack
