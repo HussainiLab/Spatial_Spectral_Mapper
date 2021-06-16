@@ -6,7 +6,6 @@ from scipy.io import savemat
 import mmap
 import contextlib
 
-
 def int16toint8(value):
     """Converts int16 data to int8"""
     value = np.divide(value, 256).astype(int)
@@ -122,8 +121,9 @@ def get_setfile_parameter(parameter, set_filename):
                         return ' '.join(new_line[1:])
 
 
-def getpos(pos_fpath, arena, method='', flip_y=True):
-    '''getpos function:
+def getpos(pos_fpath, ppm, method='', flip_y=True):
+    """
+    getpos function:
     ---------------------------------------------
     variables:
     -pos_fpath: the full path (C:\example\session.pos)
@@ -132,7 +132,7 @@ def getpos(pos_fpath, arena, method='', flip_y=True):
     t: column numpy array of the time stamps
     x: a column array of the x-values (in pixels)
     y: a column array of the y-values (in pixels)
-    '''
+    """
 
     with open(pos_fpath, 'rb+') as f:  # opening the .pos file
         headers = ''  # initializing the header string
@@ -186,7 +186,6 @@ def getpos(pos_fpath, arena, method='', flip_y=True):
                 headers += line.decode(encoding='UTF-8')
 
     if two_spot:
-
         '''Run when two spot mode is on, (one_spot has the same format so it will also run here)'''
         with open(pos_fpath, 'rb+') as f:
             '''get_pos for one_spot'''
@@ -223,9 +222,7 @@ def getpos(pos_fpath, arena, method='', flip_y=True):
 
         t = t - t[0]
 
-        x, y = arena_config(x, y, arena, conversion=ppm, center=np.asarray([np.mean([np.amin(x), np.amax(x)]),
-                                                                            np.mean([np.amin(y), np.amax(y)])]),
-                            flip_y=flip_y)
+        x, y = arena_config(x, y, ppm, center=centerBox(x,y), flip_y=flip_y)
 
         # remove any NaNs at the end of the file
         x, y, t = removeNan(x, y, t)
@@ -320,10 +317,9 @@ def is_egf_active(set_filename):
 
         return False
 
-
 def find_tetrodes(set_fullpath):
     """finds the tetrode files available for a given .set file if there is a  .cut file existing"""
-
+    
     tetrode_path, session = os.path.split(set_fullpath)
     session, _ = os.path.splitext(session)
 
@@ -335,7 +331,6 @@ def find_tetrodes(set_fullpath):
                     if is_tetrode(file, session)]
 
     # if the .cut file doesn't exist remove list
-
     tetrode_list = [file for file in tetrode_list if os.path.exists(
         os.path.join(tetrode_path, '%s_%s.cut' % (os.path.splitext(file)[0], os.path.splitext(file)[1][1:])))]
 
@@ -377,6 +372,23 @@ def find_unit(tetrode_list):
     return cut_list
 
 
+def read_clu(filename):
+    """
+    This will read in the .clu.N files that are provided by Tint. The .clu cell ID's go from 1 -> N
+    instead of the traditional 0->N-1 for a .cut file. We will convert from the 1->N format to the
+    0->N-1 format.
+    """
+
+    data = np.loadtxt(filename)
+
+    # the first number in the file is simply the number of cells that were recorded, we must remove this
+
+    # we will also subtract 1 to ensure that the data goes from 0->N-1 instead of 1->N. Essentially converting
+    # from the clu format to the .cut format.
+
+    return data[1:].flatten() - 1
+
+
 def read_cut(cut_filename):
     """This function will read the given cut file, and output the """
     cut_values = None
@@ -395,7 +407,7 @@ def read_cut(cut_filename):
     return cut_values
 
 
-def arena_config(posx, posy, arena, conversion='', center='', flip_y=True):
+def arena_config(posx, posy, ppm, center, flip_y=True):
     """
     :param posx:
     :param posy:
@@ -406,30 +418,16 @@ def arena_config(posx, posy, arena, conversion='', center='', flip_y=True):
     positions due to the camera position. However in the virtualmaze you might not want to flip y values.
     :return:
     """
-    if 'BehaviorRoom' in arena:
-        center = np.array([314.75, 390.5])
-        conversion = 495.5234
-    elif 'BehaviorRoom2' in arena:
-        # added december 12th, 2018
-        center = np.array([314.75, 390.5])
-        conversion = 485.1185
-    elif 'DarkRoom' in arena:
-        center = np.array([346.5, 273.5])
-        conversion = 711.3701
-    elif 'room4' in arena:
-        center = np.array([418, 186])
-        conversion = 313
-    elif arena in ['Linear Track', 'Circular Track', 'Four Leaf Clover Track', 'Simple Circular Track',
-                   'Parallel Linear Global Track', 'Parallel Linear Rate Track']:
-        center = center
-        conversion = conversion
-    else:
-        print("Room: " + arena + ", is an unknown room!")
+    center = center
+    conversion = ppm
 
     posx = 100 * (posx - center[0]) / conversion
 
     if flip_y:
+        # flip the y axis
         posy = 100 * (-posy + center[1]) / conversion
+    else:
+        posy = 100 * (posy + center[1]) / conversion
 
     return posx, posy
 
@@ -843,7 +841,6 @@ def visitedBins(x, y, mapAxis):
 
     return visited
 
-
 def spikePos(ts, x, y, t, cPost, shuffleSpks, shuffleCounter=True):
 
     randtime = 0
@@ -881,7 +878,9 @@ def spikePos(ts, x, y, t, cPost, shuffleSpks, shuffleCounter=True):
     newTs = np.zeros_like(spkx)
     count = -1 # need to subtract 1 because the python indices start at 0 and MATLABs at 1
 
+
     for index in range(N):
+        
         tdiff = (t - ts[index])**2
         tdiff2 = (cPost-ts[index])**2
         m = np.amin(tdiff)
@@ -902,7 +901,6 @@ def spikePos(ts, x, y, t, cPost, shuffleSpks, shuffleCounter=True):
 
     return spkx, spky, newTs, randtime
 
-
 def ratemap(spike_x, spike_y, posx, posy, post, h, yAxis, xAxis):
     invh = 1/h
     map = np.zeros((len(xAxis), len(yAxis)))
@@ -916,8 +914,11 @@ def ratemap(spike_x, spike_y, posx, posy, post, h, yAxis, xAxis):
             current_X += 1
             map[current_Y, current_X], pospdf[current_Y, current_X] = rate_estimator(spike_x, spike_y, X, Y, invh, posx, posy, post)
     pospdf = pospdf / np.sum(np.sum(pospdf))
+    
+    map = np.flipud(map)
+    pospdf = np.flipud(pospdf)
+    
     return map, pospdf
-
 
 def rate_estimator(spike_x, spike_y, x, y, invh, posx, posy, post):
     '''Calculate the rate for one position value.
@@ -926,7 +927,6 @@ def rate_estimator(spike_x, spike_y, x, y, invh, posx, posy, post):
     edge_corrector = np.trapz(gaussian_kernel(((posx-x)*invh),((posy-y)*invh)), post, axis=0)
     r = (conv_sum / (edge_corrector + 0.0001)) + 0.0001 # regularised firing rate for "wellbehavedness" i.e. no division by zero or log of zero
     return r, edge_corrector
-
 
 def gaussian_kernel(x, y):
     '''Gaussian kernel for the rate calculation:
@@ -1103,7 +1103,6 @@ def _plot(x, mph, mpd, threshold, edge, valley, ax, ind):
                      % (mode, str(mph), mpd, str(threshold), edge))
         # plt.grid()
         plt.show()
-
 
 def get_spike_color(cell_number):
 
