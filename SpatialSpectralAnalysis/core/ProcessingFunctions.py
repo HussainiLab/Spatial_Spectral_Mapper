@@ -10,8 +10,10 @@ import cv2
 from PIL import Image, ImageQt
 from PyQt5.QtGui import QPixmap
 from matplotlib import cm
+from scipy.integrate import simps
 from scipy import signal
 from scipy.signal import welch
+from math import floor
 
 # =========================================================================== # 
 
@@ -143,32 +145,66 @@ def grab_chunks(filename, notch=60, chunk_size=10, chunk_overlap=0):
 
 # =========================================================================== # 
 
-def avg_power_in_fband(fft_xaxis, fft_yaxis, low_freq, high_freq): 
+def tot_power_in_fband(fft_xaxis, fft_yaxis, low_freq, high_freq): 
     
-    # Grab indices of values between freqw band of interest in the fft
+    # # Grab indices of values between freqw band of interest in the fft
     indices = np.where(  ((fft_xaxis >= low_freq) & (fft_xaxis <= high_freq)) )[0]
-    # Average them
-    avgpow_in_band = np.mean(fft_yaxis[indices])
+    fft_xaxis_band = fft_xaxis[indices]
+    fft_yaxis_band = fft_yaxis[indices]
     
-    return avgpow_in_band
- 
+    # Computes the total power in band via integration
+    tot_power = simps(fft_yaxis_band, x=fft_xaxis_band, axis=-1, even='avg')
+    
+    return tot_power
+
+# =========================================================================== # 
+
+def tPowers_Fband_chunked(chunks, fs, window, freq_low, freq_high):
+    
+    """
+    Computes the total power per chunk of a chunked signal within
+    a specific frequency band
+
+    params: 
+        chunks: List of numpy arrays representing the chunked signal
+        fs: sampling frequency
+        window: window type for pwelch (eg hann, blackmann...)
+        freq_low / freq_high: Lower and upper bounds of specified frequency band of interest
+        
+    returns: 
+        tot_chunk_pows: 
+            array of total powers per chunk for specific freq band
+        plot_data:
+            array of psd's and frequencies per chunk'
+    """
+    
+    plot_data = np.empty((len(chunks), 1), dtype=tuple)
+    tot_chunk_pows = np.empty((len(chunks), 1), dtype=tuple)
+    for i, data_chunk in enumerate(chunks): 
+            # Compute the spectral density per chunk using welch method
+            # Compute no. samples per segment for welch fft
+            overlap = 0.5
+            nPerSeg = len(data_chunk)
+            nOverlap = np.round(overlap * nPerSeg)
+            freq, psd = welch(data_chunk, fs=fs, window=window, 
+                    nperseg=nPerSeg, noverlap=nOverlap, detrend="constant", 
+                    return_onesided=True, scaling="density")
+            
+            # Compute average power within specified spectrum band per chunk
+            plot_data[i][0] = (freq, psd) 
+            tot_chunk_pows[i] = tot_power_in_fband(freq, psd, freq_low, freq_high)
+            
+    return tot_chunk_pows, plot_data
+    
 # =========================================================================== #
 
-def compute_freq_map(self, freq_range, window, pos_x, pos_y, pos_t, fs, chunks, chunk_size, bins, kernlen, std, **kwargs):
+def compute_freq_map(self, freq_range, window, pos_x, pos_y, pos_t, fs, chunks, chunk_size, **kwargs):
     
-    scaling_factor = kwargs.get('scaling_factor', None)
-    if scaling_factor == None: 
-        scaling_factor = compute_scaling_factor( self, window, pos_x, pos_y, pos_t, chunks, fs, bins, kernlen, std)
+    chunk_pows_perBand = kwargs.get('chunk_pows_perBand', None)
+    scaling_factor_perBand = kwargs.get('scaling_factor_perBand', None)
     
-    freq_ranges = {'Delta': np.array([1, 3]), 
-                   'Theta': np.array([4, 12]),
-                   'Beta': np.array([13, 20]),
-                   'Low Gamma': np.array([35, 55]),
-                   'High Gamma': np.array([65, 120])}
-    
-    freq_low = freq_ranges[freq_range][0]
-    freq_high = freq_ranges[freq_range][1]
-    
+    kernlen = int(256*0.2)
+    std = int(kernlen*0.2)
     # Smooth via kernel convolution
     kernel = gkern(kernlen,std)
     
@@ -176,22 +212,6 @@ def compute_freq_map(self, freq_range, window, pos_x, pos_y, pos_t, fs, chunks, 
     time_vec = np.linspace(0,pos_t[-1], len(chunks))
     
     ########### Compute the spectral density per chunk ###########
-    
-    # Grab each chunk
-    avg_chunk_pows = []     # Stores the average spectrum power per chunk
-    
-    for data_chunk in chunks: 
-        # Compute the spectral density per chunk using welch method
-        # Compute no. samples per segment for welch fft
-        overlap = 0.5
-        nPerSeg = len(data_chunk)
-        nOverlap = np.round(overlap * nPerSeg)
-        freq, psd = welch(data_chunk, fs=fs, window=window, 
-                nperseg=nPerSeg, noverlap=nOverlap, detrend="constant", 
-                return_onesided=True, scaling="density")
-        
-        # Compute average power within specified spectrum band per chunk
-        avg_chunk_pows.append(avg_power_in_fband(freq, psd, freq_low, freq_high))
 
     # Min and max dimensions of arena for scaling 
     min_x = min(pos_x)
@@ -201,7 +221,7 @@ def compute_freq_map(self, freq_range, window, pos_x, pos_y, pos_t, fs, chunks, 
     
     # Calcualte the new dimensions of the frequncy map
     resize_ratio = np.abs(max_x - min_x) / np.abs(max_y - min_y)
-    base_resolution_scale = 1000
+    base_resolution_scale = 256
     
     if resize_ratio > 1:
       x_resize = int(np.ceil (base_resolution_scale*resize_ratio)) 
@@ -215,54 +235,61 @@ def compute_freq_map(self, freq_range, window, pos_x, pos_y, pos_t, fs, chunks, 
         x_resize = base_resolution_scale
         y_resize = base_resolution_scale
         
-    row_values = np.linspace(min_x,max_x,bins)
-    column_values = np.linspace(min_y,max_y,bins)
+    row_values = np.linspace(min_x,max_x,256)
+    column_values = np.linspace(min_y,max_y,256)
     
-    maps = []
-    time_step = int(len(pos_t)/100)
+    # Choose indices from time vector that most closely match the chunk size time steps
+    spaced_t = np.linspace(0, floor(pos_t[-1] / chunk_size), floor(pos_t[-1] / chunk_size)+1) * chunk_size
+    common_indices = finder(pos_t, spaced_t)
+    chosen_times = pos_t[common_indices]
     
-    for i in range(time_step, len(pos_t), time_step):
+    occ_fs = pos_t[1] - pos_t[0]
+    occ_scaling_factor = len(pos_t) * ( pos_t[1] - pos_t[0] )
+    maximum_value = index = 0
+    maps = [None] * len(common_indices[1:])
+    
+    # Split up time vector into chunk sized intervals
+    for i in range(len(common_indices[1:])):
         
-        ind_start = i - time_step
-        ind_end = i
+        occ_map_raw = np.zeros((256,256))
+        eeg_map_raw = np.zeros((256,256))
         
-        pos_x_segment = pos_x[ ind_start:ind_end ]
-        pos_y_segment = pos_y[ ind_start:ind_end ]
-        pos_t_segment = pos_t[ ind_start:ind_end ]
-        
-        occ_map_LR, occ_map_HR = position_map(pos_x_segment, pos_y_segment, pos_t_segment, 100, 16, 5)
-        eeg_map = np.zeros((bins,bins))
-        
-        for j in range(i - time_step, i):         
+        for j in range(common_indices[i-1], common_indices[i]):         
             # Grab the row and column where the mice is based on timestamp
             row_index = np.abs(row_values - pos_x[j]).argmin()
             column_index = np.abs(column_values - pos_y[j]).argmin()
-            eeg_map[row_index][column_index] += avg_chunk_pows[np.abs(time_vec - pos_t[j]).argmin()]
+            eeg_map_raw[row_index][column_index] += chunk_pows_perBand[freq_range][np.abs(time_vec - pos_t[j]).argmin()]
+            occ_map_raw[row_index][column_index] += occ_fs
+            
+        eeg_map_normalized = eeg_map_raw / (scaling_factor_perBand[freq_range])
+        occ_map_normalized = occ_map_raw / occ_scaling_factor
+        fMap = eeg_map_normalized / (occ_map_normalized)
+        fMap[np.isnan(fMap)] = 0
+        fMap_smoothed = np.rot90(cv2.filter2D(fMap,-1,kernel))
+         
+        if max(fMap_smoothed.flatten()) > maximum_value:
+            maximum_value = max(fMap_smoothed.flatten())
         
-        smoothed_eeg_map = np.rot90(cv2.filter2D(eeg_map,-1,kernel))
-        
-        freq_map = smoothed_eeg_map / (occ_map_LR + np.spacing(1))
-        freq_map = cv2.filter2D(freq_map,-1,kernel)
-        freq_map = freq_map / scaling_factor[freq_range]
-        
-        freq_map_highres = np.copy(freq_map)
-        freq_map_highres = Image.fromarray(freq_map_highres)
-        freq_map_highres = freq_map_highres.resize((x_resize,y_resize))
-        freq_map_highres = np.array(freq_map_highres)
-        freq_map[freq_map == np.nan] = 0
-        freq_map_highres[freq_map_highres == np.nan] = 0
-        
-        PIL_Image = Image.fromarray(np.uint8(cm.jet(freq_map_highres)*255))
+        maps[index] = fMap_smoothed
+        index+=1
+      
+    for i in range(len(maps)): 
+        smoothed_and_normalized_map = (maps[i] / maximum_value)
+        smoothed_and_normalized_map = cv2.resize(smoothed_and_normalized_map, dsize=(x_resize, y_resize), interpolation=cv2.INTER_CUBIC)
+        PIL_Image = Image.fromarray(np.uint8(cm.jet(smoothed_and_normalized_map)*255))
         qimage = ImageQt.ImageQt(PIL_Image)
-        image = QPixmap.fromImage(qimage)
-                
-        maps.append(image)
         
-    return maps, scaling_factor
+        maps[i] = QPixmap.fromImage(qimage)
+        
+    return maps
+    
+# =========================================================================== #
 
-def compute_scaling_factor(self, window, pos_x, pos_y, pos_t, chunks, fs, bins, kernlen, std):
+def compute_scaling_and_tPowers(self, window, pos_x, pos_y, pos_t, chunks, fs):
     
     # Smooth via kernel convolution
+    kernlen = int(256*0.2)
+    std = int(kernlen*0.2)
     kernel = gkern(kernlen,std)
     
     freq_ranges = {'Delta': np.array([1, 3]), 
@@ -271,74 +298,41 @@ def compute_scaling_factor(self, window, pos_x, pos_y, pos_t, chunks, fs, bins, 
                    'Low Gamma': np.array([35, 55]),
                    'High Gamma': np.array([65, 120])}
     
-    scaling_factor_dict = dict()
+    scaling_factor_perBand = dict()
     # Vector that will help associate each chunk with the current time in pos_t
     time_vec = np.linspace(0,pos_t[-1], len(chunks))
+    
+    # Will store the total chunk powers per freq band
+    chunk_pows_perBand = dict()
     
     ########### Compute the spectral density per chunk ###########
     # Grab chunks
     
+    # Calculate a scaling ration by adding up all the power PER band. This will help us 
+    # first normalize the eeg graphs per band. 
     for key, value in freq_ranges.items():
         self.signals.text_progress.emit("Computing " + key + " scaling")
-        avg_chunk_pows = []     # Stores the average spectrum power per chunk
-       
-        for data_chunk in chunks: 
-            # Compute the spectral density per chunk using welch method
-            # Compute no. samples per segment for welch fft
-            nSegments = 2 
-            overlap = 0.5
-            nPerSeg = np.round(len(data_chunk)//nSegments / overlap)
-            nOverlap = np.round(overlap * nPerSeg)
-            freq, psd = welch(data_chunk, fs=fs, window=window, 
-                    nperseg=nPerSeg, noverlap=nOverlap, nfft=None, detrend="constant", 
-                    return_onesided=True, scaling="density")
-            
-            # Compute average power within specified spectrum band oper chunk
-            avg_chunk_pows.append(avg_power_in_fband(freq, psd, value[0], value[1]))
-    
-        # Min and max dimensions of arena for scaling 
-        min_x = min(pos_x)
-        max_x = max(pos_x)
-        min_y = min(pos_y)
-        max_y = max(pos_y)
-        
-        row_values = np.linspace(min_x,max_x,bins)
-        column_values = np.linspace(min_y,max_y,bins)
-    
+        chunk_pows, plot_data = tPowers_Fband_chunked(chunks, fs, window, value[0], value[1])
         time_step = int(len(pos_t)/100)
-        aboslute_maximum = 0
-        for i in range(time_step, len(pos_t), time_step):
-            
-            ind_start = i - time_step
-            ind_end = i
-            
-            pos_x_segment = pos_x[ ind_start:ind_end ]
-            pos_y_segment = pos_y[ ind_start:ind_end ]
-            pos_t_segment = pos_t[ ind_start:ind_end ]
-            
-            eeg_map = np.zeros((100,100))
-            occ_map_LR, occ_map_HR = position_map(pos_x_segment, pos_y_segment, pos_t_segment, 100, 16, 5)
-            
-            for j in range(i - time_step, i): 
-                # Grab the row and column where the mice is based on timestamp
-                row_index = np.abs(row_values - pos_x[j]).argmin()
-                column_index = np.abs(column_values - pos_y[j]).argmin()
-                eeg_map[row_index][column_index] += avg_chunk_pows[np.abs(time_vec - pos_t[j]).argmin()]
-            
-            # Keep track of the largest value obtained amongst all the maps. We will use this for scaling.
-            smoothed_eeg_map = np.rot90(cv2.filter2D(eeg_map,-1,kernel))
-            freq_map = smoothed_eeg_map / (occ_map_LR + np.spacing(1))
-            freq_map = cv2.filter2D(freq_map,-1,kernel)
-            
-            if max(freq_map.flatten()) > aboslute_maximum:
-                aboslute_maximum = max(freq_map.flatten())
-                
+        nSamples_perChunk = (time_vec[1] - time_vec[0])/(1/fs)
+        total_powInBand = sum(chunk_pows) * nSamples_perChunk
         
-        scaling_factor_dict[key] = aboslute_maximum
+        chunk_pows_perBand[key] = chunk_pows
+        scaling_factor_perBand[key] = total_powInBand[0]
+        
         print(key + ' scaling is done')
+    self.signals.text_progress.emit("Scaling complete!")    
+
+    # Calculate a scaling ratio as a proportion of the total power of all the bands in the signal
+    # By this logic, Delta will make up x% of signal power, Beta = y% ...etc such that
+    # the total ratio will add up to 100%. This will help us get a sense of relation between the signal bands
+    sum_values = sum(scaling_factor_perBand.values())
+    scaling_factor_crossband = dict()
+    for key, value in freq_ranges.items():
+        scaling_factor_crossband[key] = scaling_factor_perBand[key] / sum_values
+    
         
-    self.signals.text_progress.emit("Scaling complete!")        
-    return scaling_factor_dict
+    return scaling_factor_perBand, scaling_factor_crossband, chunk_pows_perBand, plot_data
 
 # =========================================================================== #
 def speed_bins(lower_speed, higher_speed, pos_v, pos_x, pos_y, pos_t): 
@@ -366,73 +360,6 @@ def speed_bins(lower_speed, higher_speed, pos_v, pos_x, pos_y, pos_t):
             
     return new_pos_x, new_pos_y, new_pos_t  
 
-# =========================================================================== # 
-def position_map(pos_x, pos_y, pos_t, bins, kernlen, std):
-    
-    """
-        Computes the position, or occupancy map. 
-        
-        Parameters: 
-            pos_x, pos_y and pos_t: Arrays of the subjects x and y coordinates, as
-            well as the time array respectively. 
-            
-            bins: The number of bins for the map (i.e resolution.)
-            Setting the bin to 50 will produce a map witha  resolution of 50 X 50
-            
-            kernlen: The size of the kernel for smoothing the map. This can be adjusted.
-            Typically the kernel is 10% the size of the bin. So for a bin of 50, we can set it to 5. 
-            
-            std: The standard deviation or 'spread' the kernel will use to smooth the map.
-            The larger the std, the more 'strong' the spread of smoothing will be. 
-            
-            
-            Returns: 
-                Position map as a 2D array. 
-                Plots the positon map as well. 
-                
-    """
-    
-    time_step = pos_t[1] - pos_t[0]
-    min_x = min(pos_x)
-    max_x = max(pos_x)
-    min_y = min(pos_y)
-    max_y = max(pos_y)
-    
-    # Calcualte the new dimensions of the frequncy map
-    resize_ratio = np.abs(max_x - min_x) / np.abs(max_y - min_y)
-    base_resolution_scale = 1000
-    
-    if resize_ratio > 1:
-      x_resize = int(np.ceil (base_resolution_scale*resize_ratio)) 
-      y_resize = base_resolution_scale
-      
-    elif resize_ratio < 1: 
-        x_resize = base_resolution_scale
-        y_resize = int(np.ceil (base_resolution_scale*(1/resize_ratio)))
-        
-    else: 
-        x_resize = base_resolution_scale
-        y_resize = base_resolution_scale
-    
-    pos_map = np.zeros((bins,bins))
-    row_values = np.linspace(min_x,max_x,bins)
-    column_values = np.linspace(min_y,max_y,bins)
-
-    for i in range(len(pos_t)): 
-        row_index = np.abs(row_values - pos_x[i]).argmin()
-        column_index = np.abs(column_values - pos_y[i]).argmin()
-        pos_map[row_index][column_index] += time_step
-      
-    kernel = gkern(kernlen,std)
-    smoothed_pos_map = np.rot90(cv2.filter2D(pos_map,-1,kernel))
-    smoothed_pos_map = smoothed_pos_map / max(smoothed_pos_map.flatten())
-    occupancy_map   = smoothed_pos_map / max(smoothed_pos_map.flatten())
-    occupancy_map = Image.fromarray(occupancy_map)
-    occupancy_map = occupancy_map.resize((x_resize,y_resize))
-    occupancy_map = np.array(occupancy_map)
-    
-    return smoothed_pos_map, occupancy_map   
- 
 # =========================================================================== #  
 
 # https://stackoverflow.com/questions/29731726/how-to-calculate-a-gaussian-kernel-matrix-efficiently-in-numpy
@@ -444,3 +371,18 @@ def gkern(kernlen, std):
     return gkern2d
 
 # =========================================================================== #
+
+# https://stackoverflow.com/questions/44526121/finding-closest-values-in-two-numpy-arrays
+
+def finder(a, b):
+    dup = np.searchsorted(a, b)
+    uni = np.unique(dup)
+    uni = uni[uni < a.shape[0]]
+    ret_b = np.zeros(uni.shape[0])
+    for idx, val in enumerate(uni):
+        bw = np.argmin(np.abs(a[val]-b[dup == val]))
+        tt = dup == val
+        ret_b[idx] = np.where(tt == True)[0][bw]
+    
+    common_indices = np.column_stack((uni, ret_b))
+    return common_indices[:,0].astype(int)

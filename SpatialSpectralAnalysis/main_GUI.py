@@ -11,7 +11,7 @@ import sys
 from PIL import Image, ImageQt
 import numpy as np
 from functools import partial
-from compute_fMap import compute_fMap
+from initialize_fMap import initialize_fMap
 
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -26,14 +26,19 @@ from core.WorkerSignals import WorkerSignals
 
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import QThread, Qt
-from PyQt5.QtWidgets import (QGridLayout, QWidget, QListWidget, QListWidgetItem,
-                             QAbstractItemView, QLabel, QApplication, QPushButton,
-                             QFileDialog, QHBoxLayout, QVBoxLayout, QSlider, QErrorMessage,
-                             QMessageBox, QDesktopWidget, QComboBox, QLineEdit, QGraphicsPixmapItem, 
-                             QGraphicsScene, QGraphicsView, QProgressBar)
+from PyQt5.QtWidgets import *
       
 # =========================================================================== #
 
+class MplCanvas(FigureCanvasQTAgg):
+
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
+        fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = fig.add_subplot(111)
+        super(MplCanvas, self).__init__(fig)
+
+# =========================================================================== #
+        
 class frequencyPlotWindow(QWidget):
     
     def __init__(self):
@@ -70,6 +75,8 @@ class frequencyPlotWindow(QWidget):
         self.setWindowTitle("Power Spectrum Interactive Plot")
         
         # Data
+        self.plot_flag = False
+        self.plot_data = None
         self.frequencyBand = 'Delta'
         self.files = [None, None]
         self.position_data = [None, None, None]
@@ -79,10 +86,11 @@ class frequencyPlotWindow(QWidget):
         self.window_type = 'hamming'
         self.speed_lowerbound = None
         self.speed_upperbound = None
-        self.scaling_factor = None
         self.images = None
         self.freq_dict = None
         self.pos_t = None
+        self.scaling_factor_crossband = None
+        self.chunk_index = None
          
         # Creating widgets
         windowTypeBox = QComboBox()
@@ -94,27 +102,30 @@ class frequencyPlotWindow(QWidget):
         speed_Label = QLabel()
         window_Label = QLabel()
         frequency_Label = QLabel()
-        self.timeInterval_Label = QLabel()
         session_Label = QLabel()
+        self.timeInterval_Label = QLabel()
         self.session_Text = QLabel()
         self.progressBar_Label = QLabel()
+        self.power_Label = QLabel()
         
         ppmTextBox = QLineEdit(self)
         chunkSizeTextBox = QLineEdit(self)
         speedTextBox = QLineEdit()
-        # self.sessionTextBox = QLineEdit()
         quit_button = QPushButton('Quit', self)
         browse_button = QPushButton('Browse files', self)
+        self.graph_mode_button = QPushButton('Graph mode', self)
         self.render_button = QPushButton('Re-Render', self)
-        # self.canvas = MplCanvas(self, width=5, height=4, dpi=100)
-        slider = QSlider(Qt.Horizontal)
+        self.slider = QSlider(Qt.Horizontal)
         self.bar = QProgressBar(self)
+        
+        self.canvas = MplCanvas(self, width=5, height=5, dpi=100)
         
         self.scene = QGraphicsScene(self)
         self.view = QGraphicsView(self.scene)
         self.imageMapper = QGraphicsPixmapItem()
         self.scene.addItem(self.imageMapper)
         self.view.centerOn(self.imageMapper)
+        self.view.scale(5,5)
         
         # Instantiating widget properties 
         timeSlider_Label.setText("Time slider")
@@ -124,11 +135,13 @@ class frequencyPlotWindow(QWidget):
         window_Label.setText("Window type")
         frequency_Label.setText("Frequency band")
         session_Label.setText("Current session")
-        # self.canvas.axes.imshow(np.zeros((1001,1001)),cmap='jet')    # Set default map to empty
+        self.bar.setOrientation(Qt.Vertical)
         self.render_button.setStyleSheet("background-color : light gray")
         frequencyBandBox.addItem("Delta")
         frequencyBandBox.addItem("Theta")
         frequencyBandBox.addItem("Beta")
+        frequencyBandBox.addItem("Low Gamma")
+        frequencyBandBox.addItem("High Gamma")
         windowTypeBox.addItem("hamming")
         windowTypeBox.addItem("hann")
         windowTypeBox.addItem("blackmanharris")
@@ -141,10 +154,8 @@ class frequencyPlotWindow(QWidget):
         for widget in resizeWidgets:
             widget.setFixedWidth(300)
             
-        slider.setTickInterval(10)
-        slider.setSingleStep(1)
-        
         # Placing widgets
+        self.layout.addWidget(self.graph_mode_button, 0, 0)
         self.layout.addWidget(browse_button, 0,1)
         self.layout.addWidget(session_Label, 1, 0)
         self.layout.addWidget(self.session_Text, 1, 1)
@@ -159,14 +170,19 @@ class frequencyPlotWindow(QWidget):
         self.layout.addWidget(chunkSizeTextBox, 5,1)
         self.layout.addWidget(speed_Label, 6,0)
         self.layout.addWidget(speedTextBox, 6,1)
+        self.layout.addWidget(self.power_Label, 7, 0)
         self.layout.addWidget(self.view, 7,1)
+        self.layout.addWidget(self.canvas, 7,1)
+        self.layout.addWidget(self.bar, 7,2)
         self.layout.addWidget(timeSlider_Label,8,0)
-        self.layout.addWidget(slider,8,1)
+        self.layout.addWidget(self.slider,8,1)
         self.layout.addWidget(self.timeInterval_Label, 8, 2)
-        self.layout.addWidget(self.bar, 9, 1)
         self.layout.addWidget(self.progressBar_Label, 9, 2)
         self.layout.addWidget(quit_button,0,2)
         self.layout.setSpacing(10)
+        
+        # Hiding the canvas widget on startup (view and canvas are in the same place)
+        self.canvas.close()
         
         # Widget signaling
         ppmTextBox.textChanged[str].connect(partial(self.textBoxChanged, 'ppm'))
@@ -174,10 +190,13 @@ class frequencyPlotWindow(QWidget):
         speedTextBox.textChanged[str].connect(partial(self.textBoxChanged, 'speed'))
         quit_button.clicked.connect(self.quitClicked)
         browse_button.clicked.connect(self.runSession)
+        self.graph_mode_button.clicked.connect(self.switch_graph)
+        
         self.render_button.clicked.connect(self.runSession)
-        slider.valueChanged[int].connect(self.sliderChanged)
+        self.slider.valueChanged[int].connect(self.sliderChanged)
         windowTypeBox.activated[str].connect(self.windowChanged)
         frequencyBandBox.activated[str].connect(self.frequencyChanged)
+        
         
     # ------------------------------------------- #  
     
@@ -211,7 +230,6 @@ class frequencyPlotWindow(QWidget):
                 self.chunk_size = None
             if curr_string[0].isnumeric():
                 self.chunk_size = int(curr_string[0])
-                self.scaling_factor = None
         
      # ------------------------------------------- # 
      
@@ -223,7 +241,8 @@ class frequencyPlotWindow(QWidget):
         
         if len(files) > 0:
             self.active_folder = dir_path = os.path.dirname(os.path.realpath((files[0]))) 
-        
+        else: 
+            return False
         for file in files:
             extension = file.split(sep='.')[1]
             if 'pos' in extension:
@@ -232,14 +251,17 @@ class frequencyPlotWindow(QWidget):
                 self.files[1] = file
             else: 
                 self.error_dialog.showMessage('You must choose one .pos and one .eeg/.egf file.')
-                return
+                return False
         
-        self.scaling_factor = None
         self.session_Text.setText(str(self.files[1]))
+        return True
     # ------------------------------------------- #
     
     def frequencyChanged(self, value): 
         self.frequencyBand = value
+        
+        if self.scaling_factor_crossband != None:
+            self.power_Label.setText( "{:.3f}".format( self.scaling_factor_crossband[self.frequencyBand]  * 100 ) + "% of overall signal" )
         
         if self.freq_dict != None:
             self.images = self.freq_dict[self.frequencyBand]
@@ -250,16 +272,47 @@ class frequencyPlotWindow(QWidget):
        print('quit')
        QApplication.quit()
        self.close() 
-       
+    
+    # ------------------------------------------- #
+    
+    def switch_graph(self):
+        
+        cbutton = self.sender()
+        if cbutton.text() == 'Graph mode':
+            # self.layout.replaceWidget(self.view, self.canvas)
+            self.canvas.show()
+            self.view.close()
+            self.plot_flag = True
+            self.graph_mode_button.setText("Frequency image mode")
+            
+            if self.chunk_index != None and self.plot_data is not None:
+                freq, pdf = self.plot_data[self.chunk_index][0]
+                self.canvas.axes.plot( freq, pdf , linewidth=0.5 )
+        else:
+            # self.layout.replaceWidget(self.canvas, self.view)
+            self.view.show()
+            self.canvas.close()
+            self.plot_flag = False
+            self.graph_mode_button.setText("Graph mode")
+        
     # ------------------------------------------- #  
     
     def sliderChanged(self, value): 
         
-        if self.images != None:
-            # self.canvas.axes.imshow( self.images[value], cmap='jet')
-            # self.canvas.draw()
+        self.chunk_index = value 
+        
+        if self.plot_flag:
+            if self.plot_data is not None:
+                freq, pdf = self.plot_data[value][0]
+                self.canvas.axes.cla()
+                self.canvas.axes.plot( freq, pdf, linewidth=0.5 )
+                self.canvas.draw()
+            
+                
+        elif self.images is not None:
             self.imageMapper.setPixmap(self.images[value])
-            self.timeInterval_Label.setText( "{:.3f}".format(self.pos_t[  value * int(len(self.pos_t)/100)  ]) + "s" )
+            
+        self.timeInterval_Label.setText( "{:.3f}".format(self.pos_t[value]) + "s" )
     
     # ------------------------------------------- #  
     
@@ -304,17 +357,18 @@ class frequencyPlotWindow(QWidget):
             
         if boolean_check: 
             if cbutton.text() != 'Re-Render':
-                self.openFileNamesDialog()
-                if len(self.files) == 0: 
+                run_flag = self.openFileNamesDialog()
+                
+                if not run_flag:
                     return
                 
-                self.worker = Worker(compute_fMap, self.files, self.ppm, self.chunk_size, self.window_type, 
-                            self.speed_lowerbound, self.speed_upperbound, scaling_factor=self.scaling_factor)
+                self.worker = Worker(initialize_fMap, self.files, self.ppm, self.chunk_size, self.window_type, 
+                            self.speed_lowerbound, self.speed_upperbound)
                 self.worker.start()
                 self.worker.signals.image_data.connect(self.setData)
                 self.worker.signals.progress.connect(self.progressBar)
                 self.worker.signals.text_progress.connect(self.updateLabel)
-            
+                
             else: 
                 
                 if self.files[0] == self.files[1] == None:
@@ -322,8 +376,8 @@ class frequencyPlotWindow(QWidget):
                      return
                 else: 
                     self.render_button.setStyleSheet("background-color : light gray")
-                    self.worker = Worker(compute_fMap, self.files, self.ppm, self.chunk_size, self.window_type, 
-                                self.speed_lowerbound, self.speed_upperbound, scaling_factor=self.scaling_factor)
+                    self.worker = Worker(initialize_fMap, self.files, self.ppm, self.chunk_size, self.window_type, 
+                                self.speed_lowerbound, self.speed_upperbound)
                     self.worker.start()
                     self.worker.signals.image_data.connect(self.setData)
                     self.worker.signals.progress.connect(self.progressBar)
@@ -333,18 +387,22 @@ class frequencyPlotWindow(QWidget):
     
     def windowChanged(self, value): 
         self.window_type = value
-        self.scaling_factor = None
         self.render_button.setStyleSheet("background-color : rgb(0, 180,0)")
         
     # ------------------------------------------- #  
     
     def setData(self, data):
         self.freq_dict = data[0]
+        self.plot_data = data[1]
         self.images = self.freq_dict[self.frequencyBand]
-        self.scaling_factor = data[1]
         self.pos_t = data[2]
+        self.scaling_factor_crossband = data[3]
+        self.power_Label.setText( "{:.3f}".format( self.scaling_factor_crossband[self.frequencyBand] * 100) + "% of overall signal" )
         
-        print(self.images[0])
+        self.slider.setMinimum(0)
+        self.slider.setMaximum( len(self.images)-1 )
+        self.slider.setSingleStep(1)
+        
         print("Data loaded")
         
 # =========================================================================== #
@@ -365,7 +423,7 @@ class Worker(QThread):
     
     def run(self, **kwargs):
         self.data = self.function(self, *self.args, **self.kwargs)
-        self.signals.image_data.emit( (self.data[0], self.data[1], self.data[2]) )
+        self.signals.image_data.emit( (self.data[0], self.data[1], self.data[2], self.data[3]) )
 # =========================================================================== #         
 
 app = QApplication(sys.argv)
