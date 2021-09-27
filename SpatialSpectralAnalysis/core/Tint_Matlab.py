@@ -730,7 +730,6 @@ def importspikes(filename):
             'ch2': np.asarray(waveform_data[1][:][:]),
             'ch3': np.asarray(waveform_data[2][:][:]), 'ch4': np.asarray(waveform_data[3][:][:])}, spikeparam
 
-
 def speed2D(x, y, t):
     '''calculates an averaged/smoothed speed'''
 
@@ -743,9 +742,14 @@ def speed2D(x, y, t):
 
     v[0] = v[1]
     v[-1] = v[-2]
-
-    return v
-
+    
+    v = v.flatten()
+    
+    kernel_size = 12
+    kernel = np.ones(kernel_size) / kernel_size
+    v_convolved = np.convolve(v, kernel, mode='same')
+    
+    return v_convolved
 
 def fixTimestamps(post):
     first = post[0]

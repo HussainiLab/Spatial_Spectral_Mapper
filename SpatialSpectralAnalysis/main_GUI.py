@@ -8,6 +8,8 @@ Created on Thu May 27 12:51:19 2021
 import os
 import sys
 
+import xlwings as xw
+from openpyxl.utils.cell import get_column_letter
 from PIL import Image, ImageQt
 import numpy as np
 from functools import partial
@@ -74,7 +76,7 @@ class frequencyPlotWindow(QWidget):
         self.setLayout(self.layout)
         self.setWindowTitle("Power Spectrum Interactive Plot")
         
-        # Data
+        # Data initialization
         self.plot_flag = False
         self.plot_data = None
         self.frequencyBand = 'Delta'
@@ -90,6 +92,7 @@ class frequencyPlotWindow(QWidget):
         self.freq_dict = None
         self.pos_t = None
         self.scaling_factor_crossband = None
+        self.chunk_powers_data = None
         self.chunk_index = None
          
         # Creating widgets
@@ -115,6 +118,7 @@ class frequencyPlotWindow(QWidget):
         browse_button = QPushButton('Browse files', self)
         self.graph_mode_button = QPushButton('Graph mode', self)
         self.render_button = QPushButton('Re-Render', self)
+        save_button = QPushButton('Save data', self)
         self.slider = QSlider(Qt.Horizontal)
         self.bar = QProgressBar(self)
         
@@ -162,6 +166,7 @@ class frequencyPlotWindow(QWidget):
         self.layout.addWidget(self.render_button, 1, 2)
         self.layout.addWidget(frequency_Label, 2,0)
         self.layout.addWidget(frequencyBandBox, 2,1)
+        self.layout.addWidget(save_button,2,2)
         self.layout.addWidget(window_Label, 3,0)
         self.layout.addWidget(windowTypeBox, 3,1)
         self.layout.addWidget(ppm_Label, 4,0)
@@ -191,7 +196,7 @@ class frequencyPlotWindow(QWidget):
         quit_button.clicked.connect(self.quitClicked)
         browse_button.clicked.connect(self.runSession)
         self.graph_mode_button.clicked.connect(self.switch_graph)
-        
+        save_button.clicked.connect(self.saveClicked)
         self.render_button.clicked.connect(self.runSession)
         self.slider.valueChanged[int].connect(self.sliderChanged)
         windowTypeBox.activated[str].connect(self.windowChanged)
@@ -273,6 +278,33 @@ class frequencyPlotWindow(QWidget):
        QApplication.quit()
        self.close() 
     
+    # ------------------------------------------- #
+    
+    def saveClicked(self):
+        
+        if self.chunk_powers_data is None:
+            return
+        
+        print('save')
+        wb = xw.Book()
+        sheet = wb.sheets['Sheet1']
+        
+        sheet.range('A1').value = 'Timestamp'
+        sheet.range('B1').value = 'Avg Delta Power'
+        sheet.range('C1').value = 'Avg Theta Power'
+        sheet.range('D1').value = 'Avg Beta Power'
+        sheet.range('E1').value = 'Avg Low Gamma Power'
+        sheet.range('F1').value = 'Avg High Gamma Power'
+        
+        sheet.range('A2:A' + str(len(self.pos_t))).value = self.pos_t.reshape((len(self.pos_t), 1))
+        
+        for i, powers in enumerate(self.chunk_powers_data.values()):
+            length = len(powers)
+            letter = get_column_letter(i+2)
+            sheet.range(letter +'2:' + letter + str(length)).value = powers
+            
+        sheet.autofit(axis="columns")
+            
     # ------------------------------------------- #
     
     def switch_graph(self):
@@ -397,6 +429,7 @@ class frequencyPlotWindow(QWidget):
         self.images = self.freq_dict[self.frequencyBand]
         self.pos_t = data[2]
         self.scaling_factor_crossband = data[3]
+        self.chunk_powers_data = data[4]
         self.power_Label.setText( "{:.3f}".format( self.scaling_factor_crossband[self.frequencyBand] * 100) + "% of overall signal" )
         
         self.slider.setMinimum(0)
@@ -423,7 +456,7 @@ class Worker(QThread):
     
     def run(self, **kwargs):
         self.data = self.function(self, *self.args, **self.kwargs)
-        self.signals.image_data.emit( (self.data[0], self.data[1], self.data[2], self.data[3]) )
+        self.signals.image_data.emit( (self.data[0], self.data[1], self.data[2], self.data[3], self.data[4]) )
 # =========================================================================== #         
 
 app = QApplication(sys.argv)

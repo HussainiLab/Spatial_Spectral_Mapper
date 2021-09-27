@@ -68,4 +68,4 @@ def initialize_fMap(self, files, ppm, chunk_size, window_type, low_speed, high_s
         
     self.signals.text_progress.emit("Data loaded!")
     
-    return freq_maps, plot_data, chosen_times, scaling_factor_crossband
+    return freq_maps, plot_data, chosen_times, scaling_factor_crossband, chunk_pows_perBand

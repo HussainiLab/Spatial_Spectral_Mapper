@@ -354,9 +354,9 @@ def speed_bins(lower_speed, higher_speed, pos_v, pos_x, pos_y, pos_t):
     """
         
     chosen_indices = np.where((pos_v >= lower_speed) & (pos_v <= higher_speed))
-    new_pos_x = pos_x[chosen_indices]
-    new_pos_y = pos_y[chosen_indices]
-    new_pos_t = pos_t[chosen_indices]
+    new_pos_x = pos_x[chosen_indices].flatten()
+    new_pos_y = pos_y[chosen_indices].flatten()
+    new_pos_t = pos_t[chosen_indices].flatten()
             
     return new_pos_x, new_pos_y, new_pos_t  
 
