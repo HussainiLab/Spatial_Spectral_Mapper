@@ -1,0 +1,11 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\src",
+    "\\src\\core",
+    "\\src\\core\\processors",
+    "\\src\\core\\worker_thread"
+  ],
+  "SelectedNode": "\\src\\core\\worker_thread\\Worker.py",
+  "PreviewInSolutionExplorer": false
+}

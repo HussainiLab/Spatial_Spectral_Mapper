@@ -3,11 +3,10 @@ scipy==1.6.1
 matplotlib==3.3.4
 opencv_python==4.5.1.48
 openpyxl==3.0.7
-opexebo==0.5.1
 h5py==2.10.0
 PeakUtils==1.3.3
 dask==2021.6.0
 Pillow==8.2.0
-PyQt4==4.11.4
 PyQt5==5.15.4
 webcolors==1.11.1
+xlwings
