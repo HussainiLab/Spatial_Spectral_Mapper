@@ -128,3 +128,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 *.sqlite
+.vs/slnx.sqlite
+.vs/Spatial_Spectral_Mapper/v16/.suo
+.vs/VSWorkspaceState.json
