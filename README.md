@@ -24,6 +24,8 @@ If Anaconda is your primary python management software, you can run Spatial Spec
 If Visual Studio is your preffered IDE, you can run this program doing the following:
 1. Click the 'python environments' button.
 
+![vs_pyenv_button](https://user-images.githubusercontent.com/55774184/136844933-9ece49d2-fecb-427f-87e3-5db9aa9a382b.jpg)
+
 2. In the Python environments window, click 'Add Environment'
 3. Name your virtual environment, and choose Python 3.8 as your interpreter.
 4. Make sure that the 'Install packages from file' field points to the requirements.txt file path
@@ -35,7 +37,7 @@ If Visual Studio is your preffered IDE, you can run this program doing the follo
 #### Using the command line and virtualenv on Windows
 If the command line is your primary method of python environment management, you can run this program using the following steps:
 1. Make sure that python version 3.8 is installed on your system. On windows, you can check all the current versions of python installed using ```python -0``` through windows powershell.
-2. Navigate to the PRISM parent folder. If you haven't yet installed virtualenv, you can do so using ```python -3.8 -m pip install virtualenv```
+2. Navigate to the parent folder. If you haven't yet installed virtualenv, you can do so using ```python -3.8 -m pip install virtualenv```
 3. You can now create a new virtualenv using ```python -3.8 -m virtualenv my_new_cool_env```
 4. Activate your virtualenv by typing ```my_new_cool_env/Scripts/activate```. Note that you should be in the directory where *my_new_cool_env* is located.
 5. Once this environment has been activated, you can safely install pip dependencies without worrying about affecting the base environment. Use ```pip install -r requirements.txt``` after navigating to the directory where it is stored.
