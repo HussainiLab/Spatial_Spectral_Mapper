@@ -131,3 +131,5 @@ dmypy.json
 .vs/slnx.sqlite
 .vs/Spatial_Spectral_Mapper/v16/.suo
 .vs/VSWorkspaceState.json
+.vs
+.vs/
