@@ -133,3 +133,11 @@ dmypy.json
 .vs/VSWorkspaceState.json
 .vs
 .vs/
+
+# virtual environments
+.winenv
+.env
+.venv
+.venv/
+.env/
+.winenv/
