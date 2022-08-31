@@ -378,7 +378,7 @@ class frequencyPlotWindow(QWidget):
         sheet.range('D1').value = 'Avg Beta Power'
         sheet.range('E1').value = 'Avg Low Gamma Power'
         sheet.range('F1').value = 'Avg High Gamma Power'
-        sheet.range('G1').value = 'Avg Ripple Power' #Abid 4/16/2022
+        sheet.range('G1').value = 'Avg Ripple Power' #Abid: 4/16/2022
         sheet.range('H1').value = 'Avg Fast Ripple Power'
         
         # Fill the excel sheet up column wise with pos_t values 
