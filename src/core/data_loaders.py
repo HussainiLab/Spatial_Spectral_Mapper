@@ -166,7 +166,7 @@ def grab_chunks(filename, notch=60, chunk_size=10, chunk_overlap=0):
                 recorded_Fs = 4.8e3
                 Fs = 1200  # this will be the downsampled sampling rate
                 downsamp_factor = recorded_Fs / Fs
-                f_max = f_max
+                f_max = 600 #Abid 4/16/2022
                 if f_max > Fs / 2:
                     f_max = Fs / 2
 
