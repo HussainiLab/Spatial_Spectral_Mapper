@@ -168,6 +168,8 @@ class frequencyPlotWindow(QWidget):
         frequencyBandBox.addItem("Beta")
         frequencyBandBox.addItem("Low Gamma")
         frequencyBandBox.addItem("High Gamma")
+        frequencyBandBox.addItem("Ripple") #Abid 4/16/2022
+        frequencyBandBox.addItem("Fast Ripple")
         windowTypeBox.addItem("hamming")
         windowTypeBox.addItem("hann")
         windowTypeBox.addItem("blackmanharris")
@@ -376,6 +378,8 @@ class frequencyPlotWindow(QWidget):
         sheet.range('D1').value = 'Avg Beta Power'
         sheet.range('E1').value = 'Avg Low Gamma Power'
         sheet.range('F1').value = 'Avg High Gamma Power'
+        sheet.range('G1').value = 'Avg Ripple Power' #Abid 4/16/2022
+        sheet.range('H1').value = 'Avg Fast Ripple Power'
         
         # Fill the excel sheet up column wise with pos_t values 
         sheet.range('A2:A' + str(len(self.pos_t))).value = self.pos_t.reshape((len(self.pos_t), 1))
