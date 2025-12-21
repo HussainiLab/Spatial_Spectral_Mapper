@@ -9,6 +9,8 @@ import sys
 import matplotlib
 import numpy as np
 import csv
+import glob
+from pathlib import Path
 
 from PyQt5.QtWidgets import QMessageBox
 from functools import partial
@@ -21,12 +23,273 @@ from core.processors.Tint_Matlab import speed2D
 from core.processors.spectral_functions import (speed_bins)
 from core.worker_thread import WorkerSignals
 from PyQt5.QtGui import QPixmap, QFont
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import *
 from core.worker_thread.Worker import Worker
 
 matplotlib.use('Qt5Agg')
     
+# =========================================================================== #
+
+class BatchSignals(QThread):
+    '''Wrapper class to provide signals interface compatible with initialize_fMap'''
+    def __init__(self):
+        self.progress = None
+        self.text_progress = None
+
+class BatchProgressSignal:
+    '''Signal wrapper for progress updates'''
+    def __init__(self, parent_signal):
+        self.parent_signal = parent_signal
+    
+    def emit(self, value):
+        if self.parent_signal:
+            self.parent_signal.emit(value)
+
+class BatchTextSignal:
+    '''Signal wrapper for text progress updates'''
+    def __init__(self, parent_signal):
+        self.parent_signal = parent_signal
+    
+    def emit(self, value):
+        if self.parent_signal:
+            self.parent_signal.emit(value)
+
+class BatchWorkerThread(QThread):
+    '''
+        Worker thread for batch processing multiple files in a folder.
+        Emits signals for progress updates.
+    '''
+    progress_update = pyqtSignal(str)  # For text progress updates
+    progress_value = pyqtSignal(int)   # For progress bar
+    finished_signal = pyqtSignal(dict) # For completion with results
+    error_signal = pyqtSignal(str)     # For error messages
+    
+    def __init__(self, folder_path, ppm, chunk_size, window_type, 
+                 low_speed, high_speed, output_dir=None):
+        super().__init__()
+        self.folder_path = folder_path
+        self.ppm = ppm
+        self.chunk_size = chunk_size
+        self.window_type = window_type
+        self.low_speed = low_speed
+        self.high_speed = high_speed
+        self.output_dir = output_dir or folder_path
+        self.total_files = 0
+        self.processed_files = 0
+        self.successful_files = []
+        self.failed_files = []
+        
+        # Create signals wrapper for compatibility with initialize_fMap
+        self.signals = BatchSignals()
+        self.signals.progress = BatchProgressSignal(self.progress_value)
+        self.signals.text_progress = BatchTextSignal(self.progress_update)
+    
+    def find_recording_files(self):
+        '''Find all EGF/EEG files in the folder with matching .pos files'''
+        recordings = {}
+        
+        # Find all .egf and .eeg files
+        egf_files = glob.glob(os.path.join(self.folder_path, "*.egf"))
+        eeg_files = glob.glob(os.path.join(self.folder_path, "*.eeg"))
+        
+        # Process EGF files first (higher priority)
+        for egf_file in egf_files:
+            basename = Path(egf_file).stem
+            # Skip numbered variants (egf2, egf3, egf4)
+            if basename.endswith(('2', '3', '4')) and basename[:-1] in [Path(f).stem for f in egf_files]:
+                continue
+            
+            pos_file = self._find_pos_file(egf_file)
+            if pos_file:
+                recordings[basename] = (egf_file, pos_file)
+        
+        # Process EEG files (only if no EGF exists for same basename)
+        for eeg_file in eeg_files:
+            basename = Path(eeg_file).stem
+            
+            # Skip if already have EGF for this basename
+            if basename in recordings:
+                continue
+            
+            # Skip numbered variants (eeg2, eeg3, eeg4)
+            if basename.endswith(('2', '3', '4')) and basename[:-1] in [Path(f).stem for f in eeg_files]:
+                continue
+            
+            pos_file = self._find_pos_file(eeg_file)
+            if pos_file:
+                recordings[basename] = (eeg_file, pos_file)
+        
+        return list(recordings.values())
+    
+    def _find_pos_file(self, eeg_file):
+        '''Auto-detect .pos file based on .eeg/.egf filename'''
+        base_name = os.path.splitext(eeg_file)[0]
+        pos_file = base_name + '.pos'
+        
+        if os.path.exists(pos_file):
+            return pos_file
+        return None
+    
+    def run(self):
+        '''Execute batch processing in worker thread'''
+        try:
+            recordings = self.find_recording_files()
+            self.total_files = len(recordings)
+            
+            if not recordings:
+                self.error_signal.emit(f"No valid EGF/EEG files found in {self.folder_path}")
+                self.finished_signal.emit({'successful': [], 'failed': []})
+                return
+            
+            self.progress_update.emit(f"Found {self.total_files} file(s) to process")
+            
+            for electrophys_file, pos_file in recordings:
+                try:
+                    self.processed_files += 1
+                    filename = os.path.basename(electrophys_file)
+                    
+                    self.progress_update.emit(f"[{self.processed_files}/{self.total_files}] Processing: {filename}")
+                    self.progress_value.emit(int((self.processed_files / self.total_files) * 100))
+                    
+                    # Call initialize_fMap to process the file
+                    result = initialize_fMap(
+                        self,  # Pass self as the worker/signals object
+                        files=[pos_file, electrophys_file],
+                        ppm=self.ppm,
+                        chunk_size=self.chunk_size,
+                        window_type=self.window_type,
+                        low_speed=self.low_speed,
+                        high_speed=self.high_speed
+                    )
+                    
+                    # Export results to CSV
+                    self._export_to_csv(result, electrophys_file)
+                    self.successful_files.append(filename)
+                    self.progress_update.emit(f"  ✓ Complete: {filename}")
+                    
+                except Exception as e:
+                    self.failed_files.append((os.path.basename(electrophys_file), str(e)))
+                    self.progress_update.emit(f"  ✗ Failed: {os.path.basename(electrophys_file)} - {str(e)}")
+            
+            # Emit completion signal
+            results = {
+                'successful': self.successful_files,
+                'failed': self.failed_files,
+                'total': self.total_files
+            }
+            self.finished_signal.emit(results)
+            
+        except Exception as e:
+            self.error_signal.emit(f"Batch processing error: {str(e)}")
+            self.finished_signal.emit({'successful': [], 'failed': []})
+    
+    def _export_to_csv(self, result, electrophys_file):
+        '''Export processing results to CSV'''
+        freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_powers_data, tracking_data = result
+        
+        base_name = os.path.splitext(os.path.basename(electrophys_file))[0]
+        output_csv = os.path.join(self.output_dir, f"{base_name}_SSM.csv")
+        
+        bands = [
+            ("Delta", "Avg Delta Power"),
+            ("Theta", "Avg Theta Power"),
+            ("Beta", "Avg Beta Power"),
+            ("Low Gamma", "Avg Low Gamma Power"),
+            ("High Gamma", "Avg High Gamma Power"),
+            ("Ripple", "Avg Ripple Power"),
+            ("Fast Ripple", "Avg Fast Ripple Power"),
+        ]
+        
+        band_labels = [label for _, label in bands]
+        percent_labels = [f"Percent {name}" for name, _ in bands]
+        
+        # Calculate distances for each chunk
+        distances_per_bin = []
+        cumulative_distances = []
+        cumulative_sum = 0.0
+        
+        if tracking_data:
+            pos_x_chunks, pos_y_chunks = tracking_data
+            
+            for i in range(len(pos_x_chunks)):
+                distance_cm_in_bin = 0.0
+                
+                if i == 0:
+                    x_bin = pos_x_chunks[i]
+                    y_bin = pos_y_chunks[i]
+                else:
+                    prev_len = len(pos_x_chunks[i-1])
+                    x_bin = pos_x_chunks[i][prev_len:]
+                    y_bin = pos_y_chunks[i][prev_len:]
+                
+                if len(x_bin) > 1:
+                    dx = np.diff(np.array(x_bin))
+                    dy = np.diff(np.array(y_bin))
+                    distances_in_bin_pixels = np.sqrt(dx**2 + dy**2)
+                    total_distance_pixels_in_bin = np.sum(distances_in_bin_pixels)
+                    
+                    if self.ppm is not None and self.ppm > 0:
+                        distance_cm_in_bin = (total_distance_pixels_in_bin / self.ppm) * 100
+                    else:
+                        distance_cm_in_bin = total_distance_pixels_in_bin
+                
+                distances_per_bin.append(distance_cm_in_bin)
+                cumulative_sum += distance_cm_in_bin
+                cumulative_distances.append(cumulative_sum)
+        
+        # Write CSV
+        header = ["Time Bin (s)", "Distance Per Bin (cm)", "Cumulative Distance (cm)"] + band_labels + percent_labels
+        
+        with open(output_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            
+            actual_duration = float(pos_t[-1])
+            max_full_chunks = int(actual_duration / self.chunk_size)
+            num_rows = min(len(pos_t), max_full_chunks)
+            
+            # Gather per-band arrays
+            band_arrays = {}
+            for key, label in bands:
+                arr = np.array(chunk_powers_data.get(key, [])).reshape(-1)
+                band_arrays[label] = arr
+            
+            for i in range(num_rows):
+                time_bin_start = i * self.chunk_size
+                time_bin_end = (i + 1) * self.chunk_size
+                time_bin_str = f"{time_bin_start}-{time_bin_end}"
+                
+                row = [time_bin_str]
+                
+                if distances_per_bin and i < len(distances_per_bin):
+                    row.append(round(distances_per_bin[i], 3))
+                else:
+                    row.append("")
+                
+                if cumulative_distances and i < len(cumulative_distances):
+                    row.append(round(cumulative_distances[i], 3))
+                else:
+                    row.append("")
+                
+                band_values = []
+                for _, label in bands:
+                    val = band_arrays[label][i] if i < len(band_arrays[label]) else ""
+                    band_values.append(val)
+                
+                row.extend(band_values)
+                
+                numeric_vals = [float(v) for v in band_values if v != ""]
+                total_power = sum(numeric_vals)
+                
+                for v in band_values:
+                    if v == "" or total_power == 0:
+                        row.append("")
+                    else:
+                        row.append(round((float(v) / total_power) * 100.0, 3))
+                
+                writer.writerow(row)
+
 # =========================================================================== #
 
 class MplCanvas(FigureCanvasQTAgg):
@@ -132,6 +395,7 @@ class frequencyPlotWindow(QWidget):
         speedTextBox = QLineEdit()
         quit_button = QPushButton('Quit', self)
         browse_button = QPushButton('Browse file', self)
+        browse_folder_button = QPushButton('Browse folder', self)
         self.graph_mode_button = QPushButton('Graph mode', self)
         self.render_button = QPushButton('Re-Render', self)
         save_button = QPushButton('Save data', self)
@@ -189,7 +453,7 @@ class frequencyPlotWindow(QWidget):
         
         # Resize widgets to fixed width
         resizeWidgets = [windowTypeBox, chunkSizeTextBox, speedTextBox, ppmTextBox, 
-                         frequencyBandBox, browse_button]
+                         frequencyBandBox, browse_button, browse_folder_button]
         for widget in resizeWidgets:
             widget.setFixedWidth(300)
         
@@ -199,7 +463,9 @@ class frequencyPlotWindow(QWidget):
         self.render_button.setFixedWidth(150)
 
         # Placing widgets
-        self.layout.addWidget(browse_button, 0,1)
+        # Swap positions: Browse file (left), Browse folder (right)
+        self.layout.addWidget(browse_button, 0, 0)
+        self.layout.addWidget(browse_folder_button, 0, 1)
         self.layout.addWidget(session_Label, 1, 0)
         self.layout.addWidget(self.session_Text, 1, 1)
         self.layout.addWidget(self.render_button, 1, 2, alignment=Qt.AlignRight)
@@ -240,6 +506,7 @@ class frequencyPlotWindow(QWidget):
         speedTextBox.textChanged[str].connect(partial(self.textBoxChanged, 'speed'))
         quit_button.clicked.connect(self.quitClicked)
         browse_button.clicked.connect(self.runSession)
+        browse_folder_button.clicked.connect(self.browseFolderClicked)
         self.graph_mode_button.clicked.connect(self.switch_graph)
         save_button.clicked.connect(self.saveClicked)
         self.render_button.clicked.connect(self.runSession)
@@ -383,6 +650,149 @@ class frequencyPlotWindow(QWidget):
         print('quit')
         QApplication.quit()
         self.close() 
+    
+    # ------------------------------------------- #
+    
+    def browseFolderClicked(self):
+        
+        '''
+            Opens folder selection dialog and initiates batch processing
+            of all EGF/EEG files in the selected folder.
+        '''
+        
+        # Prepare error dialog window 
+        self.error_dialog = QErrorMessage()
+        
+        # Error checking ppm 
+        if self.ppm == None or self.chunk_size == None: 
+            self.error_dialog.showMessage('PPM field and/or Chunk Size field is blank, or has a non-numeric input. Please enter appropriate numerics.')
+            return
+        
+        # If speed input only specifies lower bound, set upperbound to default
+        if (self.speed_lowerbound != None and self.speed_upperbound == None):
+            self.speed_upperbound = 100
+            
+        # If speed filter text is left blank, set default to 0cms to 100cms
+        if self.speed_lowerbound == None and self.speed_upperbound == None: 
+            self.speed_lowerbound = 0
+            self.speed_upperbound = 100
+        
+        # Check speed bounds are ascending
+        if self.speed_lowerbound != None and self.speed_upperbound != None:
+            if self.speed_lowerbound > self.speed_upperbound: 
+                self.error_dialog.showMessage('Speed filter range must be ascending. Lower speed first, higher speed after. Ex: 1,5')
+                return
+        
+        # Open folder dialog
+        options = QFileDialog.Options()
+        options |= QFileDialog.ShowDirsOnly
+        folder_path = QFileDialog.getExistingDirectory(
+            self, 
+            "Select folder containing EGF/EEG files", 
+            self.active_folder,
+            options=options
+        )
+        
+        if not folder_path:
+            return
+        
+        # Remember the selected folder
+        self.active_folder = folder_path
+        
+        # Update session label
+        self.session_Text.setText(f"Batch: {folder_path}")
+        
+        # Disable buttons during processing
+        self.setButtonsEnabled(False)
+        
+        # Create and start batch worker thread
+        self.batch_worker = BatchWorkerThread(
+            folder_path,
+            self.ppm,
+            self.chunk_size,
+            self.window_type,
+            self.speed_lowerbound,
+            self.speed_upperbound,
+            output_dir=folder_path
+        )
+        
+        # Connect signals
+        self.batch_worker.progress_update.connect(self.updateBatchLabel)
+        self.batch_worker.progress_value.connect(self.progressBar)
+        self.batch_worker.finished_signal.connect(self.batchProcessingFinished)
+        self.batch_worker.error_signal.connect(self.batchProcessingError)
+        
+        # Start processing
+        self.batch_worker.start()
+        self.progressBar_Label.setText("Batch processing in progress...")
+    
+    # ------------------------------------------- #
+    
+    def updateBatchLabel(self, text):
+        '''Update progress label during batch processing'''
+        self.progressBar_Label.setText(text)
+        print(text)
+    
+    # ------------------------------------------- #
+    
+    def batchProcessingFinished(self, results):
+        '''Handle completion of batch processing'''
+        
+        successful = results.get('successful', [])
+        failed = results.get('failed', [])
+        total = results.get('total', 0)
+        
+        # Re-enable buttons
+        self.setButtonsEnabled(True)
+        
+        # Build summary message
+        summary = f"Batch processing complete!\n\n"
+        summary += f"Total files: {total}\n"
+        summary += f"✓ Successful: {len(successful)}\n"
+        
+        if successful:
+            summary += "\nProcessed files:\n"
+            for fname in successful[:5]:  # Show first 5
+                summary += f"  • {fname}\n"
+            if len(successful) > 5:
+                summary += f"  ... and {len(successful)-5} more"
+        
+        if failed:
+            summary += f"\n✗ Failed: {len(failed)}\n"
+            for fname, error in failed[:3]:  # Show first 3 errors
+                summary += f"  • {fname}: {error[:50]}...\n"
+            if len(failed) > 3:
+                summary += f"  ... and {len(failed)-3} more"
+        
+        summary += f"\nCSV files saved to:\n{self.active_folder}"
+        
+        # Show summary dialog
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Batch Processing Complete")
+        msg_box.setText(summary)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.exec_()
+        
+        self.progressBar_Label.setText("Batch processing complete!")
+        self.bar.setValue(100)
+    
+    # ------------------------------------------- #
+    
+    def batchProcessingError(self, error_msg):
+        '''Handle errors during batch processing'''
+        self.setButtonsEnabled(True)
+        self.error_dialog = QErrorMessage()
+        self.error_dialog.showMessage(f"Batch processing error: {error_msg}")
+        self.progressBar_Label.setText("Batch processing error!")
+    
+    # ------------------------------------------- #
+    
+    def setButtonsEnabled(self, enabled):
+        '''Enable/disable buttons during processing'''
+        # Find all buttons and disable them
+        for widget in self.findChildren(QPushButton):
+            if widget.text() not in ['Quit']:  # Keep Quit button enabled
+                widget.setEnabled(enabled)
     
     # ------------------------------------------- #
     
