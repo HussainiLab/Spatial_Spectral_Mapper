@@ -1,9 +1,9 @@
-numpy==1.17.5
+numpy==1.19.3
 scipy==1.6.1
 matplotlib==3.3.4
 opencv_python==4.5.1.48
 openpyxl==3.0.7
-h5py==2.10.0
+h5py
 PeakUtils==1.3.3
 dask==2021.6.0
 Pillow==8.2.0

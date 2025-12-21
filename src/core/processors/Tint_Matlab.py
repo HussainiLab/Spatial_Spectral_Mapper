@@ -542,7 +542,7 @@ def bits2uV(data, data_fpath, set_fpath=''):
     saved_eeg = np.array([])
     eeg_chan_map = np.array([])
 
-    with open(set_fpath, 'r') as f:
+    with open(set_fpath, 'r', encoding='latin-1') as f:
         for line in f:
 
             if 'ADC_fullscale_mv' in line:

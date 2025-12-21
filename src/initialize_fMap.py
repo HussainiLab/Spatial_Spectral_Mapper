@@ -54,7 +54,7 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
                 Dictionary containing array of chunk powers per band
     '''
 
-    # Validate corect files are chosen
+    # Validate correct files are chosen
     for file in files:
         extension = file.split(sep='.')[1]
         if 'pos' in extension:
@@ -87,7 +87,10 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
                    'Theta': np.array([4, 12]),
                    'Beta': np.array([13, 20]),
                    'Low Gamma': np.array([35, 55]),
-                   'High Gamma': np.array([65, 120])}
+                   'High Gamma': np.array([65, 120]),
+                   'Ripple': np.array([80, 250]), #Abid 4/16/2022
+                   'Fast Ripple': np.array([250, 500])
+                   }
     
     # Progress indicator communicated to the main UI for progress bar
     progress_indicator = 0

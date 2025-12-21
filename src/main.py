@@ -95,7 +95,7 @@ class frequencyPlotWindow(QWidget):
         self.frequencyBand = 'Delta'    # Current band of frequency (choose between Delta, Theta, Beta, Low Gamma, High Gamma)
         self.files = [None, None]       # Holds .pos and .eeg/.egf file
         self.position_data = [None, None, None] # Hods pos_x, pos_y and pos_t
-        self.active_folder = ''                 # Keeps track o last accessed directory 
+        self.active_folder = ''                 # Keeps track of last accessed directory
         self.ppm = 600                          # Pixel per meter value
         self.chunk_size = 10                    # Size of each signal chunk in seconds (user defined)
         self.window_type = 'hamming'            # Window type for welch 
@@ -104,10 +104,10 @@ class frequencyPlotWindow(QWidget):
         self.images = None                      # Holds all frequency map images
         self.freq_dict = None                   # Holds frequency map bands and associated Hz ranges
         self.pos_t = None                       # Time tracking array
-        self.scaling_factor_crossband = None    # Will hold scaling factor to normalize maps accross all bands
+        self.scaling_factor_crossband = None    # Will hold scaling factor to normalize maps across all bands
         self.chunk_powers_data = None           # Array of total powers per chunk per band
         self.chunk_index = None                 # Keeps track of what signal chunk we are on
-        self.tracking_data = None               # Keeps track of subjects position data (x and y coordinates) for plotting
+        self.tracking_data = None               # Keeps track of animal's position data (x and y coordinates) for plotting
          
         # Widget initialization
         windowTypeBox = QComboBox()
@@ -160,7 +160,7 @@ class frequencyPlotWindow(QWidget):
         session_Label.setText("Current session")
         self.frequencyViewer_Label.setText("Frequency map")
         self.graph_Label.setText("Power spectrum graph")
-        self.tracking_Label.setText("Subject tracking")
+        self.tracking_Label.setText("Animal tracking")
         self.bar.setOrientation(Qt.Vertical)
         self.render_button.setStyleSheet("background-color : light gray")
         frequencyBandBox.addItem("Delta")
@@ -168,6 +168,8 @@ class frequencyPlotWindow(QWidget):
         frequencyBandBox.addItem("Beta")
         frequencyBandBox.addItem("Low Gamma")
         frequencyBandBox.addItem("High Gamma")
+        frequencyBandBox.addItem("Ripple") #Abid 4/16/2022
+        frequencyBandBox.addItem("Fast Ripple")
         windowTypeBox.addItem("hamming")
         windowTypeBox.addItem("hann")
         windowTypeBox.addItem("blackmanharris")
@@ -306,7 +308,7 @@ class frequencyPlotWindow(QWidget):
                 bool: bool value depending on whether appropriate files were chosen.
         '''
 
-        # Set fiel dialog options
+        # Set file dialog options
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
         # Open file dialog
@@ -328,7 +330,7 @@ class frequencyPlotWindow(QWidget):
                 self.error_dialog.showMessage('You must choose one .pos and one .eeg/.egf file.')
                 return False
 
-        # If file selection is succesful, reflect the session name using the .pos prefix
+        # If file selection is successful, reflect the session name using the .pos prefix
         self.session_Text.setText(str(self.files[1]))
         return True
     # ------------------------------------------- #
@@ -376,6 +378,8 @@ class frequencyPlotWindow(QWidget):
         sheet.range('D1').value = 'Avg Beta Power'
         sheet.range('E1').value = 'Avg Low Gamma Power'
         sheet.range('F1').value = 'Avg High Gamma Power'
+        sheet.range('G1').value = 'Avg Ripple Power' #Abid 4/16/2022
+        sheet.range('H1').value = 'Avg Fast Ripple Power'
         
         # Fill the excel sheet up column wise with pos_t values 
         sheet.range('A2:A' + str(len(self.pos_t))).value = self.pos_t.reshape((len(self.pos_t), 1))
@@ -393,7 +397,7 @@ class frequencyPlotWindow(QWidget):
     def switch_graph(self):
         
         '''
-            Will switch between plotting power specral density per chunk to frequency map per chunk.
+            Will switch between plotting power spectral density per chunk to frequency map per chunk.
         '''
 
         cbutton = self.sender()
