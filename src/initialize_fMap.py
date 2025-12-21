@@ -88,9 +88,8 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
                    'Beta': np.array([13, 20]),
                    'Low Gamma': np.array([35, 55]),
                    'High Gamma': np.array([65, 120]),
-                   'Ripple': np.array([80, 250]), #Abid 4/16/2022
-                   'Fast Ripple': np.array([250, 500])
-                   }
+                   'Ripple': np.array([80, 250]), 
+                   'Fast Ripple': np.array([250, 500])}
     
     # Progress indicator communicated to the main UI for progress bar
     progress_indicator = 0

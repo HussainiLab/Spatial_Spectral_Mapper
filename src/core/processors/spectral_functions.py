@@ -326,9 +326,8 @@ def compute_scaling_and_tPowers(self, window: str, pos_x: np.ndarray, pos_y: np.
                    'Beta': np.array([13, 20]),
                    'Low Gamma': np.array([35, 55]),
                    'High Gamma': np.array([65, 120]),
-                   'Ripple':np.array([80, 250]),
-                   'Fast Ripple':np.array([250, 500])
-                   }
+                   'Ripple': np.array([80, 250]),
+                   'Fast Ripple': np.array([250, 500])} #Abid
     
     # Dict to store total power per band
     scaling_factor_perBand = dict()
