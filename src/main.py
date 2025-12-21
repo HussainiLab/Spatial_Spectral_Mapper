@@ -199,7 +199,6 @@ class frequencyPlotWindow(QWidget):
         self.render_button.setFixedWidth(150)
 
         # Placing widgets
-        self.layout.addWidget(self.graph_mode_button, 0, 0)
         self.layout.addWidget(browse_button, 0,1)
         self.layout.addWidget(session_Label, 1, 0)
         self.layout.addWidget(self.session_Text, 1, 1)
@@ -215,6 +214,7 @@ class frequencyPlotWindow(QWidget):
         self.layout.addWidget(chunkSizeTextBox, 5,1)
         self.layout.addWidget(speed_Label, 6,0)
         self.layout.addWidget(speedTextBox, 6,1)
+        self.layout.addWidget(self.graph_mode_button, 7, 0)
         self.layout.addWidget(self.frequencyViewer_Label, 7,1)
         self.layout.addWidget(self.graph_Label, 7,1)
         self.layout.addWidget(self.tracking_Label, 7,2)
@@ -416,19 +416,93 @@ class frequencyPlotWindow(QWidget):
         # Build header and rows and write CSV without external apps
         band_labels = [label for _, label in bands]
         percent_labels = [f"Percent {name}" for name, _ in bands]
-        header = ["Timestamp"] + band_labels + percent_labels
-        num_rows = len(self.pos_t)
+        
+        # Calculate distances for each chunk if tracking data is available
+        distances_per_bin = []
+        cumulative_distances = []
+        cumulative_sum = 0.0
+        
+        if self.tracking_data is not None and len(self.tracking_data) == 2:
+            pos_x_chunks, pos_y_chunks = self.tracking_data
+            
+            for i in range(len(pos_x_chunks)):
+                distance_cm_in_bin = 0.0
+                
+                # Get the positions for this bin only (not cumulative from start)
+                if i == 0:
+                    # First bin: use all positions in the first chunk
+                    x_bin = pos_x_chunks[i]
+                    y_bin = pos_y_chunks[i]
+                else:
+                    # Subsequent bins: positions from previous chunk end to current chunk end
+                    # Since chunks are cumulative from 0, we need to subtract
+                    prev_len = len(pos_x_chunks[i-1])
+                    x_bin = pos_x_chunks[i][prev_len:]
+                    y_bin = pos_y_chunks[i][prev_len:]
+                
+                # Calculate distance within this specific bin only
+                if len(x_bin) > 1:
+                    dx = np.diff(np.array(x_bin))
+                    dy = np.diff(np.array(y_bin))
+                    distances_in_bin_pixels = np.sqrt(dx**2 + dy**2)
+                    total_distance_pixels_in_bin = np.sum(distances_in_bin_pixels)
+                    
+                    # Convert from pixels to centimeters using PPM
+                    if self.ppm is not None and self.ppm > 0:
+                        distance_cm_in_bin = (total_distance_pixels_in_bin / self.ppm) * 100
+                    else:
+                        distance_cm_in_bin = total_distance_pixels_in_bin
+                
+                # Store distance for this bin only (not cumulative)
+                distances_per_bin.append(distance_cm_in_bin)
+                
+                # Update cumulative distance
+                cumulative_sum += distance_cm_in_bin
+                cumulative_distances.append(cumulative_sum)
+        
+        header = ["Time Bin (s)", "Distance Per Bin (cm)", "Cumulative Distance (cm)"] + band_labels + percent_labels
+        
+        # Determine chunk size for proper time bin labeling
+        chunk_size = self.chunk_size if self.chunk_size is not None else 10
+        
+        # Calculate the actual recording duration and round down to nearest chunk boundary
+        # This handles cases where recording is slightly over (e.g., 901s, 1201s, 601s)
+        if len(self.pos_t) > 0:
+            actual_duration = float(self.pos_t[-1])
+            # Round down to nearest chunk boundary
+            max_full_chunks = int(actual_duration / chunk_size)
+            num_rows = min(len(self.pos_t), max_full_chunks)
+        else:
+            num_rows = len(self.pos_t)
+        
         # Gather per-band arrays, ensure 1D length matches timestamps
         band_arrays = {}
         for key, label in bands:
             arr = np.array(self.chunk_powers_data.get(key, [])).reshape(-1)
             band_arrays[label] = arr
+        
         # Write CSV
         with open(out_csv, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(header)
             for i in range(num_rows):
-                row = [float(self.pos_t[i])]
+                # Create time bin string based on chunk size
+                # Bins start at chunk_size because first chunk (0 to chunk_size) is used for baseline
+                time_bin_start = i * chunk_size
+                time_bin_end = (i + 1) * chunk_size
+                time_bin_str = f"{time_bin_start}-{time_bin_end}"
+                
+                row = [time_bin_str]
+                # Add distance per bin
+                if distances_per_bin and i < len(distances_per_bin):
+                    row.append(round(distances_per_bin[i], 3))
+                else:
+                    row.append("")
+                # Add cumulative distance
+                if cumulative_distances and i < len(cumulative_distances):
+                    row.append(round(cumulative_distances[i], 3))
+                else:
+                    row.append("")
                 band_values = []
                 for _, label in bands:
                     val = band_arrays[label][i] if i < len(band_arrays[label]) else ""

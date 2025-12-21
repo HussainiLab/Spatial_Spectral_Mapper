@@ -79,7 +79,7 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
     # Choose indices from time vector that most closely match the chunk size time steps
     spaced_t = np.linspace(0, floor(new_pos_t[-1] / chunk_size), floor(new_pos_t[-1] / chunk_size)+1) * chunk_size
     common_indices = finder(new_pos_t, spaced_t)
-    chosen_times = new_pos_t[common_indices]
+    chosen_times = new_pos_t[common_indices[:-1]]  # Trim last timestamp since we have N-1 maps for N boundary points
     
     # Create a dictionary storing freq bands and corresponding freq ranges in Hz
     freq_ranges = {'Delta': np.array([1, 3]), 

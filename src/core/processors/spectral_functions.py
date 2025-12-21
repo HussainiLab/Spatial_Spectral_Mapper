@@ -131,7 +131,8 @@ def compute_tracking_chunks(pos_x, pos_y, pos_t, chunk_size):
     pos_y_chunks = []
 
     # Iterate through each 'time chunk', and append the tracking data per chunk
-    for i in range(len(common_indices[1:])):
+    # Start from index 1 to skip the first boundary (0s) and build cumulative chunks
+    for i in range(1, len(common_indices)):
         pos_x_chunks.append(pos_x[:common_indices[i]])
         pos_y_chunks.append(pos_y[:common_indices[i]])
 
@@ -225,10 +226,11 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
     occ_scaling_factor = len(pos_t) * occ_fs
     maximum_value = index = 0
     # Initialize the number of maps based on the number of chunks
-    maps = [None] * len(common_indices[1:])
+    # Use correct indexing: range(1, len(common_indices)) instead of len(common_indices[1:])
+    maps = [None] * (len(common_indices) - 1)
     
     # Iterate through each 'time chunk', and generate the maps per chunk
-    for i in range(len(common_indices[1:])):
+    for i in range(1, len(common_indices)):
         
         # Initialize empty occupancy and eeg maps
         occ_map_raw = np.zeros((256,256))
