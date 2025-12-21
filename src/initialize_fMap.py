@@ -8,7 +8,6 @@ import numpy as np
 
 from math import floor
 from matplotlib import cm
-from PIL import Image, ImageQt
 from scipy.signal import welch
 from matplotlib import pyplot as plt
 from core.data_loaders import grab_position_data, grab_chunks

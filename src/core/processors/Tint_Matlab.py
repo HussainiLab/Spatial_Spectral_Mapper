@@ -210,7 +210,7 @@ def getpos(pos_fpath, ppm, method='', flip_y=True):
         if method == 'raw':
             return x, y, t, sample_rate
 
-        t = np.divide(t, np.float(timebase))  # converting the frame number from Axona to the time value
+        t = np.divide(t, float(timebase))  # converting the frame number from Axona to the time value
 
         # values that are NaN are set to 1023 in Axona's system, replace these values by NaN's
 
@@ -754,7 +754,8 @@ def speed2D(x, y, t):
     return v_convolved
 
 def fixTimestamps(post):
-    first = post[0]
+    post = np.asarray(post, dtype=float).flatten()
+    first = float(post[0])
     N = len(post)
     uniquePost = np.unique(post)
 

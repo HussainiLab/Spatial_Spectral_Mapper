@@ -8,10 +8,9 @@ import os
 import sys
 import matplotlib
 import numpy as np
-import xlwings as xw
+import csv
 
-from openpyxl.utils.cell import get_column_letter
-from PIL import Image, ImageQt
+from PyQt5.QtWidgets import QMessageBox
 from functools import partial
 from initialize_fMap import initialize_fMap
 from matplotlib import cm
@@ -132,7 +131,7 @@ class frequencyPlotWindow(QWidget):
         chunkSizeTextBox = QLineEdit(self)
         speedTextBox = QLineEdit()
         quit_button = QPushButton('Quit', self)
-        browse_button = QPushButton('Browse files', self)
+        browse_button = QPushButton('Browse file', self)
         self.graph_mode_button = QPushButton('Graph mode', self)
         self.render_button = QPushButton('Re-Render', self)
         save_button = QPushButton('Save data', self)
@@ -312,25 +311,54 @@ class frequencyPlotWindow(QWidget):
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
         # Open file dialog
-        files, _ = QFileDialog.getOpenFileNames(self, "Choose .pos file and .eeg/.egf file", self.active_folder, options=options)
-        
-        # If a file was chosen, remember from which directory it was chosen
-        if len(files) > 0:
-            self.active_folder = dir_path = os.path.dirname(os.path.realpath((files[0]))) 
-        else: 
-            return False
-        # Check for eeg/egf and pos files 
-        for file in files:
-            extension = file.split(sep='.')[1]
-            if 'pos' in extension:
-                self.files[0] = file
-            elif 'eeg' in extension or 'egf' in extension:
-                self.files[1] = file
-            else: 
-                self.error_dialog.showMessage('You must choose one .pos and one .eeg/.egf file.')
-                return False
+        files, _ = QFileDialog.getOpenFileNames(self, "Choose .eeg/.egf file", self.active_folder, options=options)
 
-        # If file selection is successful, reflect the session name using the .pos prefix
+        # If a file was chosen, remember directory
+        if len(files) > 0:
+            self.active_folder = dir_path = os.path.dirname(os.path.realpath((files[0])))
+        else:
+            return False
+
+        # Reset tracked selection
+        self.files = [None, None]
+
+        # Helper to set by extension (case-insensitive)
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ('pos' in ext):
+                self.files[0] = file
+            elif ('eeg' in ext) or ('egf' in ext):
+                self.files[1] = file
+
+        # If only EEG/EGF was selected, try auto-find matching .pos by basename
+        if self.files[1] and not self.files[0]:
+            eeg_path = self.files[1]
+            base_no_ext = os.path.splitext(eeg_path)[0]
+            candidate_pos = base_no_ext + '.pos'
+            candidate_pos_upper = base_no_ext + '.POS'
+            if os.path.exists(candidate_pos):
+                self.files[0] = candidate_pos
+            elif os.path.exists(candidate_pos_upper):
+                self.files[0] = candidate_pos_upper
+            else:
+                # Try glob for any .pos sharing the same base name segment before last dot
+                base_dir = os.path.dirname(eeg_path)
+                base_name = os.path.basename(base_no_ext)
+                # Find any file that starts with base_name and ends with .pos
+                for name in os.listdir(base_dir):
+                    if name.lower().endswith('.pos') and name.startswith(base_name):
+                        self.files[0] = os.path.join(base_dir, name)
+                        break
+
+        # Validate we have at least EEG/EGF; and ensure POS exists (either selected or auto-found)
+        if not self.files[1]:
+            self.error_dialog.showMessage('Please select an .eeg/.egf file.')
+            return False
+        if not self.files[0]:
+            self.error_dialog.showMessage('Matching .pos file not found. Please select the .pos file as well.')
+            return False
+
+        # Reflect session name using the electrophysiology file
         self.session_Text.setText(str(self.files[1]))
         return True
     # ------------------------------------------- #
@@ -361,36 +389,63 @@ class frequencyPlotWindow(QWidget):
     def saveClicked(self):
         
         '''
-            Populates excel sheet with an array of average frequency powers as function of time.
+            Automatically saves CSV and Excel with average frequency powers vs time
+            into the selected folder with filename suffix '_SSM'.
         '''
 
         # If there are no chunk powers, do nothing
         if self.chunk_powers_data is None:
             return
-        
-        # Open excel sheet
-        wb = xw.Book()
-        sheet = wb.sheets['Sheet1']
-        # Name sheets
-        sheet.range('A1').value = 'Timestamp'
-        sheet.range('B1').value = 'Avg Delta Power'
-        sheet.range('C1').value = 'Avg Theta Power'
-        sheet.range('D1').value = 'Avg Beta Power'
-        sheet.range('E1').value = 'Avg Low Gamma Power'
-        sheet.range('F1').value = 'Avg High Gamma Power'
-        sheet.range('G1').value = 'Avg Ripple Power' #Abid: 4/16/2022
-        sheet.range('H1').value = 'Avg Fast Ripple Power'
-        
-        # Fill the excel sheet up column wise with pos_t values 
-        sheet.range('A2:A' + str(len(self.pos_t))).value = self.pos_t.reshape((len(self.pos_t), 1))
-        
-        # Fill up columns with band powers
-        for i, powers in enumerate(self.chunk_powers_data.values()):
-            length = len(powers)
-            letter = get_column_letter(i+2)
-            sheet.range(letter +'2:' + letter + str(length)).value = powers
-            
-        sheet.autofit(axis="columns")
+
+        # Expected band order and labels
+        bands = [
+            ("Delta", "Avg Delta Power"),
+            ("Theta", "Avg Theta Power"),
+            ("Beta", "Avg Beta Power"),
+            ("Low Gamma", "Avg Low Gamma Power"),
+            ("High Gamma", "Avg High Gamma Power"),
+            ("Ripple", "Avg Ripple Power"),
+            ("Fast Ripple", "Avg Fast Ripple Power"),
+        ]
+
+        # Determine output directory and base name
+        out_dir = self.active_folder or os.getcwd()
+        base_name = os.path.splitext(os.path.basename(self.files[1] or 'output'))[0]
+        out_csv = os.path.join(out_dir, f"{base_name}_SSM.csv")
+
+        # Build header and rows and write CSV without external apps
+        band_labels = [label for _, label in bands]
+        percent_labels = [f"Percent {name}" for name, _ in bands]
+        header = ["Timestamp"] + band_labels + percent_labels
+        num_rows = len(self.pos_t)
+        # Gather per-band arrays, ensure 1D length matches timestamps
+        band_arrays = {}
+        for key, label in bands:
+            arr = np.array(self.chunk_powers_data.get(key, [])).reshape(-1)
+            band_arrays[label] = arr
+        # Write CSV
+        with open(out_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for i in range(num_rows):
+                row = [float(self.pos_t[i])]
+                band_values = []
+                for _, label in bands:
+                    val = band_arrays[label][i] if i < len(band_arrays[label]) else ""
+                    band_values.append(val)
+                # Append band values
+                row.extend(band_values)
+                # Compute total power across bands at this row (ignore blanks)
+                numeric_vals = [float(v) for v in band_values if v != ""]
+                total_power = sum(numeric_vals)
+                # Compute per-band percentages
+                for v in band_values:
+                    if v == "" or total_power == 0:
+                        row.append("")
+                    else:
+                        row.append(round((float(v) / total_power) * 100.0, 3))
+                writer.writerow(row)
+        QMessageBox.information(self, "Save Complete", f"Data saved to:\n{out_csv}")
             
     # ------------------------------------------- #
     
@@ -535,7 +590,7 @@ class frequencyPlotWindow(QWidget):
             else: 
                 # If no files chosen
                 if self.files[0] == self.files[1] == None:
-                     self.error_dialog.showMessage("You haven't selected a session yet from browse files")
+                     self.error_dialog.showMessage("You haven't selected a session yet from Browse file")
                      return
 
                 else: 

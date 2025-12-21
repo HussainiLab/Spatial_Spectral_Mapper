@@ -160,7 +160,7 @@ def grab_chunks(filename, notch=60, chunk_size=10, chunk_overlap=0):
                 f_max = 125
 
                 # reading in the data
-                m = np.fromstring(m, dtype='>b')
+                m = np.frombuffer(m, dtype='>b')
                 m, scalar = bits2uV(m, filename)
             else:
                 recorded_Fs = 4.8e3
@@ -171,7 +171,7 @@ def grab_chunks(filename, notch=60, chunk_size=10, chunk_overlap=0):
                     f_max = Fs / 2
 
                 # reading in the data
-                m = np.fromstring(m, dtype='<h')
+                m = np.frombuffer(m, dtype='<h')
                 m, scalar = bits2uV(m, filename)
 
                 # filter before downsampling to avoid anti-aliasing

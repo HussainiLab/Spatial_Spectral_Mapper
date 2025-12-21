@@ -5,12 +5,12 @@ import numpy as np
 import mmap
 import contextlib
 
-from PIL import Image, ImageQt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QImage
 from matplotlib import cm
 from matplotlib import pyplot as plt
-from scipy.integrate import simps
+ 
 from scipy import signal
+from scipy.integrate import trapezoid
 from scipy.signal import welch
 from math import floor
 from .Tint_Matlab import bits2uV
@@ -41,8 +41,8 @@ def tot_power_in_fband(fft_xaxis: np.ndarray, fft_yaxis: np.ndarray,
     fft_xaxis_band = fft_xaxis[indices]
     fft_yaxis_band = fft_yaxis[indices]
     
-    # Computes the total power in band via integration
-    tot_power = simps(fft_yaxis_band, x=fft_xaxis_band, axis=-1, even='avg')
+    # Computes the total power in band via integration (trapezoidal rule)
+    tot_power = trapezoid(fft_yaxis_band, x=fft_xaxis_band)
     
     return tot_power
 
@@ -120,7 +120,7 @@ def compute_tracking_chunks(pos_x, pos_y, pos_t, chunk_size):
     '''
 
     # Create a new 'spaced out' time vector that equally partitions the time vector based on chunk size.
-    spaced_t = np.linspace(0, floor(pos_t[-1] / chunk_size), floor(pos_t[-1] / chunk_size)+1) * chunk_size
+    spaced_t = np.linspace(0, floor(float(pos_t[-1]) / chunk_size), floor(float(pos_t[-1]) / chunk_size)+1) * chunk_size
     # Find all the common indices between the spaced time vector and the timestamps (i.e experiment time) vector. 
     common_indices = finder(pos_t, spaced_t)
     # Grab corresponding timestamps from the pos_t vector with the common indices
@@ -221,8 +221,8 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
     chosen_times = pos_t[common_indices]
     
     # Compute a scaling factor for the occupancy map
-    occ_fs = pos_t[1] - pos_t[0]
-    occ_scaling_factor = len(pos_t) * ( pos_t[1] - pos_t[0] )
+    occ_fs = float(pos_t[1] - pos_t[0])
+    occ_scaling_factor = len(pos_t) * occ_fs
     maximum_value = index = 0
     # Initialize the number of maps based on the number of chunks
     maps = [None] * len(common_indices[1:])
@@ -237,11 +237,11 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
         # Build the occupancy and eeg maps for the current time chunk
         for j in range(common_indices[i-1], common_indices[i]):         
             # Grab the row and column where the mice is based on timestamp
-            row_index = np.abs(row_values - pos_x[j]).argmin()
-            column_index = np.abs(column_values - pos_y[j]).argmin()
+            row_index = np.abs(row_values - float(pos_x[j])).argmin()
+            column_index = np.abs(column_values - float(pos_y[j])).argmin()
             
             # Encode the power of the band into whatever bins have been visited
-            eeg_map_raw[row_index][column_index] += chunk_pows_perBand[freq_range][np.abs(time_vec - pos_t[j]).argmin()]
+            eeg_map_raw[row_index][column_index] += chunk_pows_perBand[freq_range][np.abs(time_vec - float(pos_t[j])).argmin()][0]
             # Encode the occupancy based on whatever bins have been visited
             occ_map_raw[row_index][column_index] += occ_fs
             
@@ -252,7 +252,12 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
         # Compute the frequency map by dividing the eeg map with the occupancy map.
         # This follows the same compute principle as a neural ratemap. Regions of high 
         # eeg activity and low occupancy will encode as significant activity.
-        fMap = eeg_map_normalized / (occ_map_normalized)
+        fMap = np.divide(
+            eeg_map_normalized,
+            occ_map_normalized,
+            out=np.zeros_like(eeg_map_normalized),
+            where=occ_map_normalized != 0,
+        )
         # Replace any Nans with zero in case zero divide is encountered
         fMap[np.isnan(fMap)] = 0
         # Rotate and smooth the map
@@ -274,9 +279,9 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
     for i in range(len(maps)): 
         smoothed_and_normalized_map = (maps[i] / maximum_value)
         smoothed_and_normalized_map = cv2.resize(smoothed_and_normalized_map, dsize=(x_resize, y_resize), interpolation=cv2.INTER_CUBIC)
-        PIL_Image = Image.fromarray(np.uint8(cm.jet(smoothed_and_normalized_map)*255))
-        qimage = ImageQt.ImageQt(PIL_Image)
-        
+        rgba = np.uint8(cm.jet(smoothed_and_normalized_map) * 255)
+        h, w, _ = rgba.shape
+        qimage = QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888)
         maps[i] = QPixmap.fromImage(qimage)
         
     return maps
@@ -408,7 +413,7 @@ def gkern(kernlen, std):
         Returns a 2D Gaussian kernel array
     '''
 
-    gkern1d = signal.gaussian(kernlen, std=std).reshape(kernlen, 1)
+    gkern1d = signal.windows.gaussian(kernlen, std=std).reshape(kernlen, 1)
     gkern2d = np.outer(gkern1d, gkern1d)
     return gkern2d
 

@@ -173,7 +173,7 @@ def iirfilt(bandtype, data, Fs, Wp, Ws=[], order=3, analog_val=False, automatic=
             else:
                 b, a = signal.iirfilter(order, [Wp, Ws], btype=bandtype, analog=analog_val, ftype=filttype)
 
-    if data != []:
+    if data is not None and np.size(data) != 0:
         if len(data.shape) > 1:
             #print('Filtering multidimensional array!')
             filtered_data = np.zeros((data.shape[0], data.shape[1]))
@@ -234,7 +234,7 @@ def iirfilt(bandtype, data, Fs, Wp, Ws=[], order=3, analog_val=False, automatic=
             plt.axvline(cutoff2, color='green')
             # plt.plot(cutoff, 0.5*np.sqrt(2), 'ko') # cutoff frequency
         plt.show()
-    if data != []:
+    if data is not None and np.size(data) != 0:
         return filtered_data
 
 # =========================================================================== #
@@ -249,7 +249,7 @@ def custom_cheby1(data, Fs, N, Rp, Wp, Ws=None, filtresponse='bandpass', analog_
 
     b, a = signal.cheby1(N, Rp, Wn, 'bandpass', analog=analog_value)
 
-    if data != []:
+    if data is not None and np.size(data) != 0:
         if len(data.shape) > 1:
             #print('Filtering multidimensional array!')
             filtered_data = np.zeros((data.shape[0], data.shape[1]))
