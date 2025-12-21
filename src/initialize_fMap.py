@@ -65,17 +65,21 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
                 fs = 1200
             electrophys_file = file
     
+    print("  → Loading position data...")
     # Extract position data and filter with speed filter settings
     pos_x, pos_y, pos_t, arena_size =  grab_position_data(pos_file , ppm)
     pos_v = speed2D(pos_x, pos_y, pos_t)
     new_pos_x, new_pos_y, new_pos_t = speed_bins(low_speed, high_speed, pos_v, pos_x, pos_y, pos_t)
     
+    print("  → Chunking EEG data...")
     # Chunk eeg data 
     chunks = grab_chunks(electrophys_file, notch=60, chunk_size=chunk_size, chunk_overlap=0)
     
+    print("  → Computing scaling factors and powers...")
     # Grab scaling factors. We compute this outside the loop since we only need it once. 
     scaling_factor_perBand, scaling_factor_crossband, chunk_pows_perBand, plot_data = compute_scaling_and_tPowers(self, window_type, pos_x, pos_y, pos_t, chunks, fs)
     
+    print("  → Aligning time bins...")
     # Choose indices from time vector that most closely match the chunk size time steps
     spaced_t = np.linspace(0, floor(new_pos_t[-1] / chunk_size), floor(new_pos_t[-1] / chunk_size)+1) * chunk_size
     common_indices = finder(new_pos_t, spaced_t)
@@ -96,6 +100,7 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
     # Compute freq maps
     freq_maps = dict()
     for key, value in freq_ranges.items():
+        print(f"  → Computing {key} frequency maps...")
         self.signals.text_progress.emit("Computing mapping for " + key )
         maps = compute_freq_map(self, key, new_pos_x, new_pos_y, new_pos_t, fs, chunks, chunk_size, 
                                 scaling_factor_perBand=scaling_factor_perBand, 
@@ -105,6 +110,7 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
         progress_indicator += 1
         self.signals.progress.emit(progress_indicator*20)
     
+    print("  → Computing tracking chunks...")
     pos_x_chunks, pos_y_chunks = compute_tracking_chunks(new_pos_x, new_pos_y, new_pos_t, chunk_size)
     self.signals.text_progress.emit("Data loaded!")
     

@@ -91,6 +91,8 @@
 - Graph mode for power spectral density visualization
 
 ### Usage
+
+#### GUI Mode (Interactive)
 1. Launch the application: `python src/main.py`
 2. Click **Browse file** to select your `.eeg` or `.egf` file (`.pos` file will be auto-detected)
 3. Configure parameters:
@@ -100,6 +102,51 @@
 4. Click **Render** to process the data
 5. Use the **time slider** to navigate through different time bins
 6. Click **Save** to export data as CSV
+
+#### Batch Mode (Command-Line - No GUI)
+For automated analysis of multiple files or scripted processing:
+
+```bash
+# Single file processing
+python src/batch_ssm.py path/to/recording.eeg
+
+# Process entire directory (all .egf/.eeg files)
+python src/batch_ssm.py E:/DATA/Ephys/Mouse-D/
+
+# With custom parameters
+python src/batch_ssm.py path/to/recording.eeg --ppm 500 --chunk-size 5 --speed-filter 5,20
+
+# Specify output directory
+python src/batch_ssm.py path/to/recording.eeg -o results/
+
+# Full example
+python src/batch_ssm.py data/recording.eeg --ppm 600 --chunk-size 10 --speed-filter 2,30 -o ./output/
+```
+
+**Batch Mode Parameters:**
+- `electrophys_file`: Path to `.eeg` or `.egf` file, or directory containing multiple recordings (required)
+- `-o, --output`: Output directory for CSV (default: same as input file)
+- `--ppm`: Pixels per meter (default: 600)
+- `--chunk-size`: Time window in seconds (default: 10)
+- `--speed-filter`: Speed range "min,max" in cm/s (default: "0,100")
+- `--window`: FFT window type (default: "hann")
+- `--timeout`: Processing timeout per file in seconds (default: 300)
+
+**Example Script for Multiple Files:**
+```python
+import subprocess
+import glob
+
+# Process all .eeg files in a directory
+for eeg_file in glob.glob("data/*.eeg"):
+    subprocess.run([
+        "python", "src/batch_ssm.py", 
+        eeg_file,
+        "--ppm", "600",
+        "--chunk-size", "10",
+        "-o", "results/"
+    ])
+```
 
 ### CSV Output Format
 - **Time Bin (s)**: Time interval (e.g., "0-10", "10-20")
@@ -112,6 +159,8 @@
 - Excel is **NOT required** for CSV export (updated from previous versions)
 - Position data (`.pos` files) should be sampled at 50 Hz
 - EEG data formats supported: Axona `.eeg` (250 Hz) and `.egf` (1200 Hz)
+- **Batch processing**: Now handles position data files with mismatched timestamp arrays (automatically trims or extends as needed)
+- **Directory mode**: When processing a directory, the script prioritizes `.egf` files over `.eeg` and skips duplicate variants (e.g., .egf2-.egf4)
 
 ### Troubleshooting
 - **Import errors**: Ensure all dependencies are installed with `pip install -r requirements.txt`

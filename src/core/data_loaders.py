@@ -36,17 +36,24 @@ def grab_position_data(pos_path: str, ppm: int) -> tuple:
             pos_y_width (float): max(pos_y) - min(pos_y)
     '''
 
+    print("    → Reading .pos file...")
     # Acquire position data
     pos_data = getpos(pos_path, ppm)
+    print("    → .pos file loaded, correcting timestamps...")
     
     # Correcting pos_t data in case of bad position file
     new_pos_t = np.copy(pos_data[2])
-    if len(new_pos_t) != len(pos_data[0]): 
-        while len(new_pos_t) != len(pos_data[0]):
+    if len(new_pos_t) < len(pos_data[0]):
+        # If timestamps are shorter, append missing ones
+        while len(new_pos_t) < len(pos_data[0]):
             new_pos_t = np.append(new_pos_t, float(new_pos_t[-1] + 0.02))
+    elif len(new_pos_t) > len(pos_data[0]):
+        # If timestamps are longer, trim them
+        new_pos_t = new_pos_t[:len(pos_data[0])]
     
     Fs_pos = pos_data[3]
     
+    print("    → Extracting and centering coordinates...")
     # Extract x,y coordinate, and t(ime) arrays
     pos_x = pos_data[0]
     pos_y = pos_data[1]
@@ -57,6 +64,7 @@ def grab_position_data(pos_path: str, ppm: int) -> tuple:
     pos_x = pos_x - center[0]
     pos_y = pos_y - center[1]
     
+    print("    → Removing bad tracking...")
     # Remove any bad tracking
     pos_data_corrected = remBadTrack(pos_x, pos_y, pos_t, 2)
     pos_x = pos_data_corrected[0]
@@ -68,11 +76,13 @@ def grab_position_data(pos_path: str, ppm: int) -> tuple:
     pos_x = pos_x[nonNanValues]
     pos_y = pos_y[nonNanValues]
     
+    print("    → Smoothing position data...")
     # Boxcar smooth positioin data using convolution
     B = np.ones((int(np.ceil(0.4 * Fs_pos)), 1)) / np.ceil(0.4 * Fs_pos)
     pos_x = scipy.ndimage.convolve(pos_x, B, mode='nearest')
     pos_y = scipy.ndimage.convolve(pos_y, B, mode='nearest')
     
+    print("    → Position data processing complete")
     # Grab width and height of 2D arena
     pos_x_width = max(pos_x) - min(pos_x)
     pos_y_width = max(pos_y) - min(pos_y)
