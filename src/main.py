@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Created on Thu May 27 12:51:19 2021
+Updated on Dec 21 2025
 @author: vajramsrujan
+@author: Hussainilab
 """
 
 import os
@@ -86,41 +88,53 @@ class BatchWorkerThread(QThread):
         self.signals.text_progress = BatchTextSignal(self.progress_update)
     
     def find_recording_files(self):
-        '''Find all EGF/EEG files in the folder with matching .pos files'''
+        '''
+            Find electrophysiology recordings in folder by priority:
+              1) .egf
+              2) .egf2, .egf3, .egf4
+              3) .eeg
+              4) .eeg2, .eeg3, .eeg4
+            Returns: (recordings_list, missing_pos_bases, found_any_ephys)
+        '''
         recordings = {}
         
-        # Find all .egf and .eeg files
-        egf_files = glob.glob(os.path.join(self.folder_path, "*.egf"))
-        eeg_files = glob.glob(os.path.join(self.folder_path, "*.eeg"))
+        # Gather all candidate files across prioritized extensions
+        patterns = ["*.egf", "*.egf2", "*.egf3", "*.egf4",
+                    "*.eeg", "*.eeg2", "*.eeg3", "*.eeg4"]
+        all_files = []
+        for pat in patterns:
+            all_files.extend(glob.glob(os.path.join(self.folder_path, pat)))
         
-        # Process EGF files first (higher priority)
-        for egf_file in egf_files:
-            basename = Path(egf_file).stem
-            # Skip numbered variants (egf2, egf3, egf4)
-            if basename.endswith(('2', '3', '4')) and basename[:-1] in [Path(f).stem for f in egf_files]:
+        # Group by basename (without extension)
+        base_to_files = {}
+        for fpath in all_files:
+            base = Path(fpath).stem
+            ext = Path(fpath).suffix.lower().lstrip('.')  # e.g., 'egf', 'egf2', 'eeg3'
+            base_to_files.setdefault(base, {})[ext] = fpath
+        
+        # Selection priority
+        priority = ["egf", "egf2", "egf3", "egf4",
+                    "eeg", "eeg2", "eeg3", "eeg4"]
+        
+        missing_pos_bases = []
+
+        # For each base, pick best available by priority and ensure .pos exists
+        for base, ext_map in base_to_files.items():
+            chosen = None
+            for ext in priority:
+                if ext in ext_map:
+                    chosen = ext_map[ext]
+                    break
+            if not chosen:
                 continue
-            
-            pos_file = self._find_pos_file(egf_file)
+            pos_file = self._find_pos_file(chosen)
             if pos_file:
-                recordings[basename] = (egf_file, pos_file)
+                recordings[base] = (chosen, pos_file)
+            else:
+                missing_pos_bases.append(base)
         
-        # Process EEG files (only if no EGF exists for same basename)
-        for eeg_file in eeg_files:
-            basename = Path(eeg_file).stem
-            
-            # Skip if already have EGF for this basename
-            if basename in recordings:
-                continue
-            
-            # Skip numbered variants (eeg2, eeg3, eeg4)
-            if basename.endswith(('2', '3', '4')) and basename[:-1] in [Path(f).stem for f in eeg_files]:
-                continue
-            
-            pos_file = self._find_pos_file(eeg_file)
-            if pos_file:
-                recordings[basename] = (eeg_file, pos_file)
-        
-        return list(recordings.values())
+        found_any_ephys = len(base_to_files) > 0
+        return list(recordings.values()), missing_pos_bases, found_any_ephys
     
     def _find_pos_file(self, eeg_file):
         '''Auto-detect .pos file based on .eeg/.egf filename'''
@@ -134,11 +148,31 @@ class BatchWorkerThread(QThread):
     def run(self):
         '''Execute batch processing in worker thread'''
         try:
-            recordings = self.find_recording_files()
+            recordings, missing_pos_bases, found_any_ephys = self.find_recording_files()
             self.total_files = len(recordings)
             
-            if not recordings:
-                self.error_signal.emit(f"No valid EGF/EEG files found in {self.folder_path}")
+            # Report missing .pos per base
+            if missing_pos_bases:
+                bases_preview = ", ".join(missing_pos_bases[:5])
+                more_count = len(missing_pos_bases) - 5
+                suffix = f" ... and {more_count} more" if more_count > 0 else ""
+                self.error_signal.emit(
+                    f"Missing .pos files for {len(missing_pos_bases)} base(s): {bases_preview}{suffix}"
+                )
+
+            # If no recordings and no ephys found at all, show specific message
+            if not recordings and not found_any_ephys:
+                self.error_signal.emit(
+                    f"No electrophysiology files found in {self.folder_path}. Expected .egf/.egf2-4 or .eeg/.eeg2-4."
+                )
+                self.finished_signal.emit({'successful': [], 'failed': []})
+                return
+            
+            # If some ephys were found but none had .pos, end gracefully
+            if not recordings and found_any_ephys:
+                self.error_signal.emit(
+                    f"No recordings could be processed because matching .pos files were missing."
+                )
                 self.finished_signal.emit({'successful': [], 'failed': []})
                 return
             
@@ -373,19 +407,20 @@ class frequencyPlotWindow(QWidget):
          
         # Widget initialization
         windowTypeBox = QComboBox()
-        frequencyBandBox = QComboBox()
         
         timeSlider_Label = QLabel()
         ppm_Label = QLabel()
         chunkSize_Label = QLabel()
         speed_Label = QLabel()
         window_Label = QLabel()
-        frequency_Label = QLabel()
         session_Label = QLabel()
         self.timeInterval_Label = QLabel()
         self.session_Text = QLabel()
         self.progressBar_Label = QLabel()
-        self.power_Label = QLabel()
+        self.power_Label = QTextEdit()
+        self.power_Label.setReadOnly(True)
+        self.power_Label.setWordWrapMode(True)
+        self.power_Label.setMaximumHeight(150)
         self.frequencyViewer_Label = QLabel()
         self.graph_Label = QLabel()
         self.tracking_Label = QLabel()
@@ -413,26 +448,19 @@ class frequencyPlotWindow(QWidget):
         self.view.centerOn(self.imageMapper)
         self.view.scale(3,3)
         
+        
         # Instantiating widget properties 
         timeSlider_Label.setText("Time slider")
         ppm_Label.setText("Pixel per meter (ppm)")
         chunkSize_Label.setText("Chunk size (seconds)")
         speed_Label.setText("Speed filter (optional)")
         window_Label.setText("Window type")
-        frequency_Label.setText("Frequency band")
         session_Label.setText("Current session")
         self.frequencyViewer_Label.setText("Frequency map")
         self.graph_Label.setText("Power spectrum graph")
         self.tracking_Label.setText("Animal tracking")
         self.bar.setOrientation(Qt.Vertical)
         self.render_button.setStyleSheet("background-color : light gray")
-        frequencyBandBox.addItem("Delta")
-        frequencyBandBox.addItem("Theta")
-        frequencyBandBox.addItem("Beta")
-        frequencyBandBox.addItem("Low Gamma")
-        frequencyBandBox.addItem("High Gamma")
-        frequencyBandBox.addItem("Ripple") #Abid 4/16/2022
-        frequencyBandBox.addItem("Fast Ripple")
         windowTypeBox.addItem("hamming")
         windowTypeBox.addItem("hann")
         windowTypeBox.addItem("blackmanharris")
@@ -451,9 +479,13 @@ class frequencyPlotWindow(QWidget):
         self.graph_Label.setAlignment(Qt.AlignCenter)
         self.tracking_Label.setAlignment(Qt.AlignCenter)
         
+        # Set fixed width and height for power display to fit all bands on single lines
+        self.power_Label.setFixedWidth(380)
+        self.power_Label.setFixedHeight(220)
+        
         # Resize widgets to fixed width
         resizeWidgets = [windowTypeBox, chunkSizeTextBox, speedTextBox, ppmTextBox, 
-                         frequencyBandBox, browse_button, browse_folder_button]
+                         browse_button, browse_folder_button]
         for widget in resizeWidgets:
             widget.setFixedWidth(300)
         
@@ -466,34 +498,32 @@ class frequencyPlotWindow(QWidget):
         # Swap positions: Browse file (left), Browse folder (right)
         self.layout.addWidget(browse_button, 0, 0)
         self.layout.addWidget(browse_folder_button, 0, 1)
+        self.layout.addWidget(quit_button, 0, 2, alignment=Qt.AlignRight)
         self.layout.addWidget(session_Label, 1, 0)
         self.layout.addWidget(self.session_Text, 1, 1)
         self.layout.addWidget(self.render_button, 1, 2, alignment=Qt.AlignRight)
-        self.layout.addWidget(frequency_Label, 2,0)
-        self.layout.addWidget(frequencyBandBox, 2,1)
-        self.layout.addWidget(save_button,2,2, alignment=Qt.AlignRight)
-        self.layout.addWidget(window_Label, 3,0)
-        self.layout.addWidget(windowTypeBox, 3,1)
-        self.layout.addWidget(ppm_Label, 4,0)
-        self.layout.addWidget(ppmTextBox, 4,1)
-        self.layout.addWidget(chunkSize_Label, 5,0)
-        self.layout.addWidget(chunkSizeTextBox, 5,1)
-        self.layout.addWidget(speed_Label, 6,0)
-        self.layout.addWidget(speedTextBox, 6,1)
-        self.layout.addWidget(self.graph_mode_button, 7, 0)
-        self.layout.addWidget(self.frequencyViewer_Label, 7,1)
-        self.layout.addWidget(self.graph_Label, 7,1)
-        self.layout.addWidget(self.tracking_Label, 7,2)
-        self.layout.addWidget(self.power_Label, 8, 0)
-        self.layout.addWidget(self.view, 8,1)
-        self.layout.addWidget(self.graph_canvas, 8,1)
-        self.layout.addWidget(self.tracking_canvas, 8,2)
-        self.layout.addWidget(self.bar, 8,3)
-        self.layout.addWidget(timeSlider_Label,9,0)
-        self.layout.addWidget(self.slider,9,1)
-        self.layout.addWidget(self.timeInterval_Label, 9, 3)
-        self.layout.addWidget(self.progressBar_Label, 10, 3)
-        self.layout.addWidget(quit_button,0,2, alignment=Qt.AlignRight)
+        self.layout.addWidget(save_button, 2, 2, alignment=Qt.AlignRight)
+        self.layout.addWidget(window_Label, 2, 0)
+        self.layout.addWidget(windowTypeBox, 2, 1)
+        self.layout.addWidget(ppm_Label, 3, 0)
+        self.layout.addWidget(ppmTextBox, 3, 1)
+        self.layout.addWidget(chunkSize_Label, 4, 0)
+        self.layout.addWidget(chunkSizeTextBox, 4, 1)
+        self.layout.addWidget(speed_Label, 5, 0)
+        self.layout.addWidget(speedTextBox, 5, 1)
+        self.layout.addWidget(self.graph_mode_button, 6, 0)
+        self.layout.addWidget(self.frequencyViewer_Label, 6, 1)
+        self.layout.addWidget(self.graph_Label, 6, 1)
+        self.layout.addWidget(self.tracking_Label, 6, 2)
+        self.layout.addWidget(self.power_Label, 7, 0)
+        self.layout.addWidget(self.view, 7, 1)
+        self.layout.addWidget(self.graph_canvas, 7, 1)
+        self.layout.addWidget(self.tracking_canvas, 7, 2)
+        self.layout.addWidget(self.bar, 7, 3)
+        self.layout.addWidget(timeSlider_Label, 8, 0)
+        self.layout.addWidget(self.slider, 8, 1)
+        self.layout.addWidget(self.timeInterval_Label, 8, 3)
+        self.layout.addWidget(self.progressBar_Label, 9, 3)
         self.layout.setSpacing(10)
         
         # Hiding the canvas and graph label widget on startup 
@@ -512,7 +542,6 @@ class frequencyPlotWindow(QWidget):
         self.render_button.clicked.connect(self.runSession)
         self.slider.valueChanged[int].connect(self.sliderChanged)
         windowTypeBox.activated[str].connect(self.windowChanged)
-        frequencyBandBox.activated[str].connect(self.frequencyChanged)
         
     # ------------------------------------------- #  
     
@@ -577,10 +606,15 @@ class frequencyPlotWindow(QWidget):
         # Set file dialog options
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        # Open file dialog
-        files, _ = QFileDialog.getOpenFileNames(self, "Choose .eeg/.egf file", self.active_folder, options=options)
-
-        # If a file was chosen, remember directory
+        # Open file dialog with file filter (include numbered variants)
+        file_filter = (
+            "EEG/EGF Files (*.eeg *.eeg2 *.eeg3 *.eeg4 *.egf *.egf2 *.egf3 *.egf4 *.pos);;"
+            "EEG Files (*.eeg *.eeg2 *.eeg3 *.eeg4);;"
+            "EGF Files (*.egf *.egf2 *.egf3 *.egf4);;"
+            "Position Files (*.pos);;"
+            "All Files (*)"
+        )
+        files, _ = QFileDialog.getOpenFileNames(self, "Choose .eeg/.egf file", self.active_folder, file_filter, options=options)
         if len(files) > 0:
             self.active_folder = dir_path = os.path.dirname(os.path.realpath((files[0])))
         else:
@@ -630,15 +664,40 @@ class frequencyPlotWindow(QWidget):
         return True
     # ------------------------------------------- #
     
-    def frequencyChanged(self, value): 
-        self.frequencyBand = value
+    def updatePowerDisplay(self, chunk_index):
+        '''
+            Update the power label to show all frequency bands and their 
+            percentages for the current time chunk.
+        '''
+        if self.chunk_powers_data is None:
+            return
         
-        if self.scaling_factor_crossband != None:
-            self.power_Label.setText( "{:.3f}".format( self.scaling_factor_crossband[self.frequencyBand]  * 100 ) + "% of overall signal" )
+        # Define frequency bands in order
+        freq_bands = ['Delta', 'Theta', 'Beta', 'Low Gamma', 'High Gamma', 'Ripple', 'Fast Ripple']
         
-        if self.freq_dict != None:
-            self.images = self.freq_dict[self.frequencyBand]
+        # Calculate total power across all bands for this chunk
+        total_power = 0
+        band_powers = {}
+        for band in freq_bands:
+            if band in self.chunk_powers_data and chunk_index < len(self.chunk_powers_data[band]):
+                band_powers[band] = self.chunk_powers_data[band][chunk_index][0]
+                total_power += band_powers[band]
         
+        # Build the display text with all bands and their percentages
+        if total_power > 0:
+            display_text = "<b>Power Distribution:</b><br>"
+            for band in freq_bands:
+                if band in band_powers:
+                    percentage = (band_powers[band] / total_power) * 100
+                    # Highlight the currently selected band
+                    if band == self.frequencyBand:
+                        display_text += f"<b>\u2192 {band}: {percentage:.2f}%</b><br>"
+                    else:
+                        display_text += f"&nbsp;&nbsp;&nbsp;{band}: {percentage:.2f}%<br>"
+            self.power_Label.setHtml(display_text)
+        else:
+            self.power_Label.setPlainText("No data available")
+    
     # ------------------------------------------- #
     
     def quitClicked(self):
@@ -951,7 +1010,32 @@ class frequencyPlotWindow(QWidget):
             # Only show the graph if there is something to plot
             if self.chunk_index != None and self.plot_data is not None:
                 freq, pdf = self.plot_data[self.chunk_index][0]
-                self.graph_canvas.axes.plot( freq, pdf , linewidth=0.5 )
+                
+                # Plot with modern styling
+                self.graph_canvas.axes.plot(freq, pdf, linewidth=2, color='#2E86AB', alpha=0.9)
+                self.graph_canvas.axes.fill_between(freq, pdf, alpha=0.3, color='#2E86AB')
+                
+                # Add frequency band shading with ranges in labels
+                freq_bands = {
+                    'Delta (1-3 Hz)': (1, 3, '#FF6B6B'),
+                    'Theta (4-12 Hz)': (4, 12, '#4ECDC4'),
+                    'Beta (13-20 Hz)': (13, 20, '#95E1D3'),
+                    'Low Gamma (35-55 Hz)': (35, 55, '#F38181'),
+                    'High Gamma (65-120 Hz)': (65, 120, '#AA96DA'),
+                    'Ripple (80-250 Hz)': (80, 250, '#FCBAD3'),
+                    'Fast Ripple (250-500 Hz)': (250, 500, '#A8D8EA')
+                }
+                for band_label, (low, high, color) in freq_bands.items():
+                    self.graph_canvas.axes.axvspan(low, high, alpha=0.1, color=color, label=band_label)
+                
+                # Styling
+                self.graph_canvas.axes.set_xlabel('Frequency (Hz)', fontsize=11, fontweight='bold')
+                self.graph_canvas.axes.set_ylabel('Power Spectral Density (µV²/Hz)', fontsize=11, fontweight='bold')
+                self.graph_canvas.axes.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+                self.graph_canvas.axes.set_facecolor('#F8F9FA')
+                self.graph_canvas.axes.spines['top'].set_visible(False)
+                self.graph_canvas.axes.spines['right'].set_visible(False)
+                self.graph_canvas.axes.legend(loc='upper right', fontsize=7, framealpha=0.9)
         # Else show freq map
         else:
             self.view.show()
@@ -962,6 +1046,48 @@ class frequencyPlotWindow(QWidget):
             self.graph_mode_button.setText("Graph mode")
         
     # ------------------------------------------- #  
+    
+    def updatePowerDisplay(self, chunk_index):
+        '''
+            Update the power label to show all frequency bands with ranges and their 
+            percentages for the current time chunk.
+        '''
+        if self.chunk_powers_data is None:
+            return
+        
+        # Define frequency bands with ranges
+        freq_band_ranges = {
+            'Delta': '1-3 Hz',
+            'Theta': '4-12 Hz',
+            'Beta': '13-20 Hz',
+            'Low Gamma': '35-55 Hz',
+            'High Gamma': '65-120 Hz',
+            'Ripple': '80-250 Hz',
+            'Fast Ripple': '250-500 Hz'
+        }
+        freq_bands = list(freq_band_ranges.keys())
+        
+        # Calculate total power across all bands for this chunk
+        total_power = 0
+        band_powers = {}
+        for band in freq_bands:
+            if band in self.chunk_powers_data and chunk_index < len(self.chunk_powers_data[band]):
+                band_powers[band] = self.chunk_powers_data[band][chunk_index][0]
+                total_power += band_powers[band]
+        
+        # Build the display text with all bands, ranges, and their percentages
+        if total_power > 0:
+            display_text = "<b>Power Distribution:</b><br>"
+            for band in freq_bands:
+                if band in band_powers:
+                    percentage = (band_powers[band] / total_power) * 100
+                    freq_range = freq_band_ranges[band]
+                    display_text += f"{band} ({freq_range}): {percentage:.2f}%<br>"
+            self.power_Label.setHtml(display_text)
+        else:
+            self.power_Label.setPlainText("No data available")
+    
+    # ------------------------------------------- #
     
     def sliderChanged(self, value): 
         
@@ -978,9 +1104,36 @@ class frequencyPlotWindow(QWidget):
             if self.plot_data is not None:
                 freq, pdf = self.plot_data[value][0]
                 self.graph_canvas.axes.cla()
-                self.graph_canvas.axes.plot( freq, pdf, linewidth=0.5 )
-                self.graph_canvas.axes.set_xlabel('Frequency (Hz)')
-                self.graph_canvas.axes.set_ylabel('Power Spectral Density (microWatts / Hz)')
+                
+                # Plot with modern styling
+                self.graph_canvas.axes.plot(freq, pdf, linewidth=2, color='#2E86AB', alpha=0.9)
+                self.graph_canvas.axes.fill_between(freq, pdf, alpha=0.3, color='#2E86AB')
+                
+                # Add frequency band shading
+                freq_bands = {
+                    'Delta': (1, 3, '#FF6B6B'),
+                    'Theta': (4, 12, '#4ECDC4'),
+                    'Beta': (13, 20, '#95E1D3'),
+                    'Low Gamma': (35, 55, '#F38181'),
+                    'High Gamma': (65, 120, '#AA96DA'),
+                    'Ripple': (80, 250, '#FCBAD3'),
+                    'Fast Ripple': (250, 500, '#A8D8EA')
+                }
+                y_max = pdf.max() * 1.1
+                for band_name, (low, high, color) in freq_bands.items():
+                    self.graph_canvas.axes.axvspan(low, high, alpha=0.1, color=color, label=band_name)
+                
+                # Styling
+                self.graph_canvas.axes.set_xlabel('Frequency (Hz)', fontsize=11, fontweight='bold')
+                self.graph_canvas.axes.set_ylabel('Power Spectral Density (µV²/Hz)', fontsize=11, fontweight='bold')
+                self.graph_canvas.axes.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+                self.graph_canvas.axes.set_facecolor('#F8F9FA')
+                self.graph_canvas.axes.spines['top'].set_visible(False)
+                self.graph_canvas.axes.spines['right'].set_visible(False)
+                
+                # Add legend
+                self.graph_canvas.axes.legend(loc='upper right', fontsize=7, framealpha=0.9)
+                
                 self.graph_canvas.draw()
         # Else if we have maps to plot, plot the frequency maps    
         elif self.images is not None:
@@ -995,6 +1148,12 @@ class frequencyPlotWindow(QWidget):
         # Reflect what time interval we are plotting
         if self.pos_t is not None:
             self.timeInterval_Label.setText( "{:.3f}".format(self.pos_t[value]) + "s" )
+        
+        # Update power display with current chunk's frequency band percentages
+        self.updatePowerDisplay(value)
+        
+        # Update power display with current chunk's frequency band percentages
+        self.updatePowerDisplay(value)
     
     # ------------------------------------------- #  
     
@@ -1117,13 +1276,15 @@ class frequencyPlotWindow(QWidget):
         self.scaling_factor_crossband = data[3]             # Scaling factor crossband dictionary
         self.chunk_powers_data = data[4]                    # Array of chunk power data
         self.tracking_data = data[5]
-        # Set label on UI to show what percentage of the signal power the chosen band comprises
-        self.power_Label.setText( "{:.3f}".format( self.scaling_factor_crossband[self.frequencyBand] * 100) + "% of overall signal" )
         
         # Slider limits
         self.slider.setMinimum(0)
         self.slider.setMaximum( len(self.images)-1 )
         self.slider.setSingleStep(1)
+        
+        # Initialize power display with first chunk
+        self.chunk_index = 0
+        self.updatePowerDisplay(0)
         
         print("Data loaded")
         
