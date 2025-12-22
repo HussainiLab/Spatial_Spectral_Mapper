@@ -26,6 +26,7 @@ class Worker(QThread):
     
     def run(self, **kwargs):
         self.data = self.function(self, *self.args, **self.kwargs)
-        self.signals.image_data.emit( (self.data[0], self.data[1], self.data[2], self.data[3], self.data[4], self.data[5]) )
+        # Emit full data tuple to support optional binned_data (backward compatible in receiver)
+        self.signals.image_data.emit(self.data)
 
 # =========================================================================== #
