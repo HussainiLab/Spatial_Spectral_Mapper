@@ -9,10 +9,12 @@ Updated on Dec 21 2025
 import os
 import sys
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import csv
 import glob
 from pathlib import Path
+import subprocess
 
 from PyQt5.QtWidgets import QMessageBox
 from functools import partial
@@ -22,7 +24,13 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from core.data_loaders import grab_position_data
 from core.processors.Tint_Matlab import speed2D
-from core.processors.spectral_functions import (speed_bins)
+from core.processors.spectral_functions import (
+    speed_bins,
+    export_binned_analysis_to_csv,
+    visualize_binned_analysis,
+    visualize_binned_analysis_by_chunk,
+    visualize_binned_occupancy_and_dominant
+)
 from core.worker_thread import WorkerSignals
 from PyQt5.QtGui import QPixmap, QFont
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -219,8 +227,13 @@ class BatchWorkerThread(QThread):
             self.finished_signal.emit({'successful': [], 'failed': []})
     
     def _export_to_csv(self, result, electrophys_file):
-        '''Export processing results to CSV'''
-        freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_powers_data, tracking_data = result
+        '''Export processing results to CSV and binned analysis'''
+        # Support legacy (6-tuple) and new (7-tuple with binned_data)
+        if len(result) == 6:
+            freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_powers_data, tracking_data = result
+            binned_data = None
+        else:
+            freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_powers_data, tracking_data, binned_data = result
         
         base_name = os.path.splitext(os.path.basename(electrophys_file))[0]
         output_csv = os.path.join(self.output_dir, f"{base_name}_SSM.csv")
@@ -324,6 +337,456 @@ class BatchWorkerThread(QThread):
                 
                 writer.writerow(row)
 
+        # Export binned analysis (Excel + JPG visualization) if available
+        try:
+            if binned_data is not None:
+                output_prefix = os.path.join(self.output_dir, f"{base_name}_binned")
+                export_result = export_binned_analysis_to_csv(binned_data, output_prefix)
+                if export_result and export_result.get('format') == 'csv' and export_result.get('reason') == 'openpyxl_not_installed' and hasattr(self, 'progress_update'):
+                    self.progress_update.emit("  ⚠ Excel export unavailable (openpyxl missing). CSV fallback used.")
+                # Export binned heatmap as JPG instead of PNG
+                viz_path = f"{output_prefix}_heatmap.jpg"
+                visualize_binned_analysis(binned_data, save_path=viz_path)
+        except Exception as e:
+            # Non-fatal error: report in progress area
+            if hasattr(self, 'progress_update'):
+                self.progress_update.emit(f"  ⚠ Binned export failed: {str(e)}")
+
+# =========================================================================== #
+
+class BinnedAnalysisWindow(QDialog):
+    '''
+        Separate window for binned analysis functionality with dynamic visualization.
+        Displays frequency band power, occupancy, and dominant band heatmaps.
+    '''
+    
+    def __init__(self, parent=None, binned_data=None, files=None, active_folder=None):
+        super().__init__(parent)
+        self.binned_data = binned_data
+        self.files = files or [None, None]
+        self.active_folder = active_folder or os.getcwd()
+        self.current_chunk = 0
+        self.show_percent_power = False
+        self.setWindowTitle("Binned Analysis Studio")
+        self.setGeometry(100, 100, 1400, 900)
+        self.initUI()
+    
+    def initUI(self):
+        '''Initialize the binned analysis window UI'''
+        main_layout = QVBoxLayout(self)
+        
+        # Top section: Title
+        title_label = QLabel("4×4 Binned Frequency Analysis Studio")
+        title_label.setFont(QFont("Times New Roman", 16, QFont.Bold))
+        main_layout.addWidget(title_label)
+        
+        # Control panel
+        control_layout = QHBoxLayout()
+        
+        # Time chunk slider
+        slider_label = QLabel("Time Chunk:")
+        control_layout.addWidget(slider_label)
+        
+        self.chunk_slider = QSlider(Qt.Horizontal)
+        self.chunk_slider.setMinimum(0)
+        if self.binned_data:
+            self.chunk_slider.setMaximum(max(0, self.binned_data['time_chunks'] - 1))
+        self.chunk_slider.setSingleStep(1)
+        self.chunk_slider.setValue(0)
+        self.chunk_slider.setMaximumWidth(300)
+        self.chunk_slider.valueChanged.connect(self.onChunkChanged)
+        control_layout.addWidget(self.chunk_slider)
+        
+        self.chunk_display_label = QLabel("0 / 1")
+        self.chunk_display_label.setMinimumWidth(60)
+        control_layout.addWidget(self.chunk_display_label)
+        
+        # Power mode toggle
+        control_layout.addSpacing(20)
+        self.power_mode_btn = QPushButton("Switch to % Power", self)
+        self.power_mode_btn.setCheckable(True)
+        self.power_mode_btn.setChecked(False)
+        self.power_mode_btn.toggled.connect(self.onPowerModeToggled)
+        self.power_mode_btn.setMaximumWidth(150)
+        control_layout.addWidget(self.power_mode_btn)
+        
+        # Buttons
+        control_layout.addSpacing(20)
+        save_pngs_btn = QPushButton("Export All JPGs", self)
+        save_pngs_btn.clicked.connect(self.exportAllPngs)
+        control_layout.addWidget(save_pngs_btn)
+        
+        export_data_btn = QPushButton("Export Data (Excel)", self)
+        export_data_btn.clicked.connect(self.exportData)
+        control_layout.addWidget(export_data_btn)
+        
+        control_layout.addStretch()
+        close_btn = QPushButton("Close", self)
+        close_btn.clicked.connect(self.close)
+        control_layout.addWidget(close_btn)
+        
+        main_layout.addLayout(control_layout)
+        
+        # Display areas with scroll
+        display_layout = QHBoxLayout()
+        
+        # Left column: Mean power
+        left_layout = QVBoxLayout()
+        left_label = QLabel("Frequency Band Power")
+        left_label.setFont(QFont("", 11, QFont.Bold))
+        left_layout.addWidget(left_label)
+        
+        self.power_scroll = QScrollArea(self)
+        self.power_scroll.setWidgetResizable(True)
+        self.power_label = QLabel()
+        self.power_label.setAlignment(Qt.AlignCenter)
+        self.power_scroll.setWidget(self.power_label)
+        left_layout.addWidget(self.power_scroll)
+        display_layout.addLayout(left_layout, 2)
+        
+        # Right column: Occupancy and Dominant Band (stacked)
+        right_layout = QVBoxLayout()
+        right_label = QLabel("Occupancy & Dominant Band")
+        right_label.setFont(QFont("", 11, QFont.Bold))
+        right_layout.addWidget(right_label)
+        
+        self.occ_scroll = QScrollArea(self)
+        self.occ_scroll.setWidgetResizable(True)
+        self.occ_label = QLabel()
+        self.occ_label.setAlignment(Qt.AlignCenter)
+        self.occ_scroll.setWidget(self.occ_label)
+        right_layout.addWidget(self.occ_scroll)
+        display_layout.addLayout(right_layout, 1)
+        
+        main_layout.addLayout(display_layout, 1)
+        
+        # Status bar
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: gray; font-style: italic;")
+        main_layout.addWidget(self.status_label)
+        
+        self.setLayout(main_layout)
+        
+        # Initial render
+        if self.binned_data:
+            self.renderChunkViews()
+    
+    def getOutputFolder(self):
+        '''Get or create the binned analysis output folder'''
+        out_dir = self.active_folder
+        binned_folder = os.path.join(out_dir, "binned_analysis_output")
+        if not os.path.exists(binned_folder):
+            os.makedirs(binned_folder)
+        return binned_folder
+    
+    def onChunkChanged(self, value):
+        '''Update chunk display and re-render on slider change'''
+        self.current_chunk = value
+        max_chunks = self.binned_data['time_chunks'] if self.binned_data else 1
+        self.chunk_display_label.setText(f"{value} / {max_chunks - 1}")
+        self.renderChunkViews()
+    
+    def onPowerModeToggled(self, checked):
+        '''Toggle between absolute and percent power'''
+        self.show_percent_power = checked
+        mode = "% Power" if checked else "Absolute Power"
+        self.power_mode_btn.setText(f"Switch to {'Absolute' if checked else '%'} Power")
+        self.status_label.setText(f"Switched to {mode}")
+        self.renderChunkViews()
+    
+    def renderChunkViews(self):
+        '''Render all visualizations for current chunk (in-memory, no temp files)'''
+        if self.binned_data is None:
+            return
+        
+        try:
+            # Render frequency band power heatmap in memory
+            fig_power, axes_power = self._create_power_heatmap(self.current_chunk, self.show_percent_power)
+            power_pixmap = self._fig_to_pixmap(fig_power)
+            if not power_pixmap.isNull():
+                if power_pixmap.width() > 1000:
+                    power_pixmap = power_pixmap.scaledToWidth(1000, Qt.SmoothTransformation)
+                self.power_label.setPixmap(power_pixmap)
+            
+            # Render occupancy and dominant band in memory
+            fig_occ, _ = self._create_occupancy_heatmap(self.current_chunk)
+            occ_pixmap = self._fig_to_pixmap(fig_occ)
+            if not occ_pixmap.isNull():
+                if occ_pixmap.width() > 600:
+                    occ_pixmap = occ_pixmap.scaledToWidth(600, Qt.SmoothTransformation)
+                self.occ_label.setPixmap(occ_pixmap)
+            
+            self.status_label.setText(f"Chunk {self.current_chunk} rendered")
+        except Exception as e:
+            self.status_label.setText(f"Error rendering views: {str(e)}")
+    
+    def _fig_to_pixmap(self, fig):
+        '''Convert matplotlib figure to QPixmap without saving to disk'''
+        from io import BytesIO
+        buf = BytesIO()
+        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        pixmap = QPixmap()
+        pixmap.loadFromData(buf.getvalue(), 'PNG')
+        plt.close(fig)
+        return pixmap
+    
+    def _create_power_heatmap(self, chunk_idx, show_percent=False):
+        '''Create power heatmap figure (does not save)'''
+        n_chunks = self.binned_data['time_chunks']
+        if chunk_idx < 0 or chunk_idx >= n_chunks:
+            chunk_idx = max(0, min(chunk_idx, n_chunks - 1))
+        
+        fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+        power_type = "Percent Power" if show_percent else "Power"
+        fig.suptitle(f'4x4 Spatial Bins - Chunk {chunk_idx} (Frequency Band {power_type})', 
+                     fontsize=14, fontweight='bold')
+        
+        bands = self.binned_data['bands']
+        
+        # Get min/max across all chunks for consistent color scale
+        vmin_all = {}
+        vmax_all = {}
+        for band in bands:
+            timeseries_data = self.binned_data['bin_power_timeseries'][band]
+            
+            if show_percent:
+                percent_data = np.zeros_like(timeseries_data)
+                for t in range(timeseries_data.shape[2]):
+                    for x in range(4):
+                        for y in range(4):
+                            total_power = sum(self.binned_data['bin_power_timeseries'][b][x, y, t] 
+                                            for b in bands)
+                            if total_power > 0:
+                                percent_data[x, y, t] = (timeseries_data[x, y, t] / total_power) * 100
+                vmin_all[band] = np.nanmin(percent_data)
+                vmax_all[band] = np.nanmax(percent_data)
+            else:
+                vmin_all[band] = np.nanmin(timeseries_data)
+                vmax_all[band] = np.nanmax(timeseries_data)
+        
+        # First row: First 4 bands
+        for idx, band in enumerate(bands[:4]):
+            chunk_power = self.binned_data['bin_power_timeseries'][band][:, :, chunk_idx]
+            
+            if show_percent:
+                total_power = sum(self.binned_data['bin_power_timeseries'][b][:, :, chunk_idx] 
+                                for b in bands)
+                chunk_power = np.divide(chunk_power, total_power, where=total_power>0, 
+                                       out=np.zeros_like(chunk_power)) * 100
+            
+            im = axes[0, idx].imshow(chunk_power, cmap='hot', aspect='auto',
+                                     vmin=vmin_all[band], vmax=vmax_all[band])
+            axes[0, idx].set_title(f'{band}')
+            axes[0, idx].set_xticks([0, 1, 2, 3])
+            axes[0, idx].set_yticks([0, 1, 2, 3])
+            axes[0, idx].grid(True, alpha=0.3)
+            cbar = plt.colorbar(im, ax=axes[0, idx])
+            cbar.set_label('%' if show_percent else 'Power', fontsize=9)
+        
+        # Second row: Remaining bands
+        remaining_bands = bands[4:]
+        for idx, band in enumerate(remaining_bands):
+            chunk_power = self.binned_data['bin_power_timeseries'][band][:, :, chunk_idx]
+            
+            if show_percent:
+                total_power = sum(self.binned_data['bin_power_timeseries'][b][:, :, chunk_idx] 
+                                for b in bands)
+                chunk_power = np.divide(chunk_power, total_power, where=total_power>0, 
+                                       out=np.zeros_like(chunk_power)) * 100
+            
+            im = axes[1, idx].imshow(chunk_power, cmap='hot', aspect='auto',
+                                     vmin=vmin_all[band], vmax=vmax_all[band])
+            axes[1, idx].set_title(f'{band}')
+            axes[1, idx].set_xticks([0, 1, 2, 3])
+            axes[1, idx].set_yticks([0, 1, 2, 3])
+            axes[1, idx].grid(True, alpha=0.3)
+            cbar = plt.colorbar(im, ax=axes[1, idx])
+            cbar.set_label('%' if show_percent else 'Power', fontsize=9)
+        
+        # Hide unused subplots
+        for idx in range(len(remaining_bands), 4):
+            axes[1, idx].axis('off')
+        
+        plt.tight_layout()
+        return fig, axes
+    
+    def _create_occupancy_heatmap(self, chunk_idx):
+        '''Create occupancy and dominant band heatmap figure (does not save)'''
+        n_chunks = self.binned_data['time_chunks']
+        if chunk_idx < 0 or chunk_idx >= n_chunks:
+            chunk_idx = max(0, min(chunk_idx, n_chunks - 1))
+        
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # Left panel: Occupancy
+        occupancy = self.binned_data['bin_occupancy']
+        im1 = axes[0].imshow(occupancy, cmap='viridis', aspect='auto')
+        axes[0].set_title('Bin Occupancy (Total Time Spent)')
+        axes[0].set_xticks([0, 1, 2, 3])
+        axes[0].set_yticks([0, 1, 2, 3])
+        axes[0].grid(True, alpha=0.3)
+        cbar1 = plt.colorbar(im1, ax=axes[0])
+        cbar1.set_label('Occupancy (samples)', fontsize=9)
+        
+        # Right panel: Dominant band for specific chunk
+        dominant_chunk = self.binned_data['bin_dominant_band'][chunk_idx]
+        bands = self.binned_data['bands']
+        band_map = {band: idx for idx, band in enumerate(bands)}
+        numeric_dominant = np.zeros((4, 4))
+        for x in range(4):
+            for y in range(4):
+                band = dominant_chunk[x, y]
+                numeric_dominant[x, y] = band_map.get(band, 0)
+        
+        im2 = axes[1].imshow(numeric_dominant, cmap='tab10', aspect='auto', vmin=0, vmax=len(bands)-1)
+        axes[1].set_title(f'Dominant Band - Chunk {chunk_idx}')
+        axes[1].set_xticks([0, 1, 2, 3])
+        axes[1].set_yticks([0, 1, 2, 3])
+        axes[1].grid(True, alpha=0.3)
+        
+        # Add colorbar with band labels
+        cbar2 = plt.colorbar(im2, ax=axes[1], ticks=range(len(bands)))
+        cbar2.set_ticklabels(bands, fontsize=8)
+        cbar2.set_label('Band', fontsize=9)
+        
+        plt.tight_layout()
+        return fig, axes
+    
+    def updateBinnedData(self, binned_data, files=None, active_folder=None):
+        '''Update binned data when new session is loaded'''
+        self.binned_data = binned_data
+        if files:
+            self.files = files
+        if active_folder:
+            self.active_folder = active_folder
+        
+        # Update slider range
+        if binned_data:
+            max_chunks = binned_data['time_chunks']
+            self.chunk_slider.setMaximum(max(0, max_chunks - 1))
+            self.chunk_slider.setValue(0)
+            self.current_chunk = 0
+            self.chunk_display_label.setText(f"0 / {max_chunks - 1}")
+            self.renderChunkViews()
+        
+        self.status_label.setText("Data updated. Ready for analysis.")
+    
+    def exportAllPngs(self):
+        '''Export all JPG visualizations (mean, percent for all chunks; occupancy once; dominant band per chunk)'''
+        if self.binned_data is None:
+            QMessageBox.information(self, 'Export PNGs', 'No binned data available.')
+            return
+        
+        try:
+            self.status_label.setText("Exporting all JPGs...")
+            QApplication.processEvents()
+            
+            output_folder = self.getOutputFolder()
+            base_name = os.path.splitext(os.path.basename(self.files[1] or 'output'))[0]
+            
+            n_chunks = self.binned_data['time_chunks']
+            export_count = 0
+            
+            # Export mean power for all chunks (JPG, quality 85)
+            for chunk_idx in range(n_chunks):
+                fig, _ = self._create_power_heatmap(chunk_idx, show_percent=False)
+                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_mean_power.jpg")
+                fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
+                plt.close(fig)
+                export_count += 1
+            
+            # Export percent power for all chunks (JPG, quality 85)
+            for chunk_idx in range(n_chunks):
+                fig, _ = self._create_power_heatmap(chunk_idx, show_percent=True)
+                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_percent_power.jpg")
+                fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
+                plt.close(fig)
+                export_count += 1
+            
+            # Export occupancy only once (JPG, quality 85) - use same colormap as GUI
+            fig_occ = plt.figure(figsize=(6, 5))
+            ax = fig_occ.add_subplot(111)
+            occ = self.binned_data['bin_occupancy']
+            im = ax.imshow(occ, cmap='viridis', aspect='auto')
+            ax.set_title('Bin Occupancy (Total Time Spent)', fontsize=12, fontweight='bold')
+            ax.set_xticks([0, 1, 2, 3])
+            ax.set_yticks([0, 1, 2, 3])
+            ax.grid(True, alpha=0.3)
+            cbar = plt.colorbar(im, ax=ax)
+            cbar.set_label('Occupancy (samples)', fontsize=9)
+            jpg_path = os.path.join(output_folder, f"{base_name}_occupancy.jpg")
+            fig_occ.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
+            plt.close(fig_occ)
+            export_count += 1
+            
+            # Export dominant band per chunk (JPG, quality 85)
+            for chunk_idx in range(n_chunks):
+                fig, _ = self._create_occupancy_heatmap(chunk_idx)
+                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_dominant_band.jpg")
+                fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
+                plt.close(fig)
+                export_count += 1
+            
+            self.status_label.setText(f"✓ Exported {export_count} JPGs")
+            QMessageBox.information(
+                self,
+                'Export Complete',
+                f'Exported {export_count} JPG files to:\n{output_folder}\n\n'
+                f'  • {n_chunks} mean power heatmaps\n'
+                f'  • {n_chunks} percent power heatmaps\n'
+                f'  • 1 occupancy heatmap (time-invariant)\n'
+                f'  • {n_chunks} dominant band heatmaps\n\n'
+                f'(JPG format for faster export & smaller file size)'
+            )
+        except Exception as e:
+            self.status_label.setText(f"Export failed: {str(e)}")
+            QMessageBox.warning(self, 'Export Error', f'Failed to export JPGs: {str(e)}')
+    
+    def exportData(self):
+        '''Export binned analysis data to Excel files (or CSV fallback)'''
+        if self.binned_data is None:
+            QMessageBox.information(self, 'Export Data', 'No binned data available. Please run a session first.')
+            return
+        
+        try:
+            self.status_label.setText("Exporting data...")
+            QApplication.processEvents()
+            
+            output_folder = self.getOutputFolder()
+            base_name = os.path.splitext(os.path.basename(self.files[1] or 'output'))[0]
+            result = export_binned_analysis_to_csv(self.binned_data, os.path.join(output_folder, f"{base_name}_binned"))
+            self.status_label.setText(f"✓ Data exported ({result['format']})")
+            file_list = "\n".join([f"  • {os.path.basename(p)}" for p in result['files']])
+            if result.get('format') == 'csv' and result.get('reason') == 'openpyxl_not_installed':
+                warn = QMessageBox(self)
+                warn.setWindowTitle('Excel Export Unavailable')
+                warn.setText('openpyxl not installed — exported CSV instead.\n\nInstall openpyxl to enable Excel export with multiple sheets.')
+                install_btn = warn.addButton('Install openpyxl', QMessageBox.AcceptRole)
+                warn.addButton('Skip', QMessageBox.RejectRole)
+                warn.exec_()
+                if warn.clickedButton() == install_btn:
+                    try:
+                        self.status_label.setText('Installing openpyxl...')
+                        QApplication.processEvents()
+                        proc = subprocess.run([sys.executable, '-m', 'pip', 'install', 'openpyxl'], capture_output=True, text=True)
+                        if proc.returncode == 0:
+                            QMessageBox.information(self, 'Installation Complete', 'openpyxl installed successfully. Re-exporting to Excel...')
+                            # Re-run export to produce Excel files
+                            result = export_binned_analysis_to_csv(self.binned_data, os.path.join(output_folder, f"{base_name}_binned"))
+                            self.status_label.setText(f"✓ Data exported ({result['format']})")
+                            file_list = "\n".join([f"  • {os.path.basename(p)}" for p in result['files']])
+                        else:
+                            QMessageBox.warning(self, 'Installation Failed', f'Could not install openpyxl.\n\n{proc.stderr[:500]}')
+                    except Exception as ie:
+                        QMessageBox.warning(self, 'Installation Error', f'Error installing openpyxl: {str(ie)}')
+            QMessageBox.information(self, 'Export Complete',
+                f'Binned analysis data exported to:\n{output_folder}\n\n'
+                f'Format: {result["format"].upper()}\n\nFiles:\n{file_list}')
+        except Exception as e:
+            self.status_label.setText(f"Export failed: {str(e)}")
+            QMessageBox.warning(self, 'Export Error', f'Failed to export data: {str(e)}')
+
 # =========================================================================== #
 
 class MplCanvas(FigureCanvasQTAgg):
@@ -392,9 +855,9 @@ class frequencyPlotWindow(QWidget):
         self.files = [None, None]       # Holds .pos and .eeg/.egf file
         self.position_data = [None, None, None] # Hods pos_x, pos_y and pos_t
         self.active_folder = ''                 # Keeps track of last accessed directory
-        self.ppm = 600                          # Pixel per meter value
+        self.ppm = 511                          # Pixel per meter value
         self.chunk_size = 10                    # Size of each signal chunk in seconds (user defined)
-        self.window_type = 'hamming'            # Window type for welch 
+        self.window_type = 'hann'               # Window type for welch 
         self.speed_lowerbound = None            # Lower limit for speed filter
         self.speed_upperbound = None            # Upper limit for speed filter
         self.images = None                      # Holds all frequency map images
@@ -424,6 +887,7 @@ class frequencyPlotWindow(QWidget):
         self.frequencyViewer_Label = QLabel()
         self.graph_Label = QLabel()
         self.tracking_Label = QLabel()
+        self.binned_analysis_window = None  # Reference to separate binned analysis window
         
         ppmTextBox = QLineEdit(self)
         chunkSizeTextBox = QLineEdit(self)
@@ -431,6 +895,7 @@ class frequencyPlotWindow(QWidget):
         quit_button = QPushButton('Quit', self)
         browse_button = QPushButton('Browse file', self)
         browse_folder_button = QPushButton('Browse folder', self)
+        self.binned_analysis_btn = QPushButton('Binned Analysis Studio', self)
         self.graph_mode_button = QPushButton('Graph mode', self)
         self.render_button = QPushButton('Re-Render', self)
         save_button = QPushButton('Save data', self)
@@ -461,12 +926,12 @@ class frequencyPlotWindow(QWidget):
         self.tracking_Label.setText("Animal tracking")
         self.bar.setOrientation(Qt.Vertical)
         self.render_button.setStyleSheet("background-color : light gray")
-        windowTypeBox.addItem("hamming")
         windowTypeBox.addItem("hann")
+        windowTypeBox.addItem("hamming")
         windowTypeBox.addItem("blackmanharris")
         windowTypeBox.addItem("boxcar")
         speedTextBox.setPlaceholderText("Ex: Type 5,10 for 5cms to 10cms range filter")
-        ppmTextBox.setText("600")
+        ppmTextBox.setText("511")
         chunkSizeTextBox.setText("10")
         
         # Set font sizes of label headers
@@ -520,6 +985,8 @@ class frequencyPlotWindow(QWidget):
         self.layout.addWidget(self.graph_canvas, 7, 1)
         self.layout.addWidget(self.tracking_canvas, 7, 2)
         self.layout.addWidget(self.bar, 7, 3)
+        # Place binned analysis button near the bottom-right
+        self.layout.addWidget(self.binned_analysis_btn, 9, 2, alignment=Qt.AlignRight)
         self.layout.addWidget(timeSlider_Label, 8, 0)
         self.layout.addWidget(self.slider, 8, 1)
         self.layout.addWidget(self.timeInterval_Label, 8, 3)
@@ -540,6 +1007,7 @@ class frequencyPlotWindow(QWidget):
         self.graph_mode_button.clicked.connect(self.switch_graph)
         save_button.clicked.connect(self.saveClicked)
         self.render_button.clicked.connect(self.runSession)
+        self.binned_analysis_btn.clicked.connect(self.openBinnedAnalysisWindow)
         self.slider.valueChanged[int].connect(self.sliderChanged)
         windowTypeBox.activated[str].connect(self.windowChanged)
         
@@ -858,13 +1326,21 @@ class frequencyPlotWindow(QWidget):
     def saveClicked(self):
         
         '''
-            Automatically saves CSV and Excel with average frequency powers vs time
-            into the selected folder with filename suffix '_SSM'.
+            Automatically saves Excel and CSV with average frequency powers vs time
+            into the output folder with filename suffix '_SSM'.
         '''
 
         # If there are no chunk powers, do nothing
         if self.chunk_powers_data is None:
             return
+
+        # Try to use Excel; fallback to CSV
+        try:
+            import openpyxl
+            use_excel = True
+        except ImportError:
+            use_excel = False
+            import csv
 
         # Expected band order and labels
         bands = [
@@ -880,9 +1356,13 @@ class frequencyPlotWindow(QWidget):
         # Determine output directory and base name
         out_dir = self.active_folder or os.getcwd()
         base_name = os.path.splitext(os.path.basename(self.files[1] or 'output'))[0]
-        out_csv = os.path.join(out_dir, f"{base_name}_SSM.csv")
+        
+        if use_excel:
+            out_file = os.path.join(out_dir, f"{base_name}_SSM.xlsx")
+        else:
+            out_file = os.path.join(out_dir, f"{base_name}_SSM.csv")
 
-        # Build header and rows and write CSV without external apps
+        # Build header and rows and write CSV or Excel
         band_labels = [label for _, label in bands]
         percent_labels = [f"Percent {name}" for name, _ in bands]
         
@@ -950,45 +1430,60 @@ class frequencyPlotWindow(QWidget):
             arr = np.array(self.chunk_powers_data.get(key, [])).reshape(-1)
             band_arrays[label] = arr
         
-        # Write CSV
-        with open(out_csv, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            for i in range(num_rows):
-                # Create time bin string based on chunk size
-                # Bins start at chunk_size because first chunk (0 to chunk_size) is used for baseline
-                time_bin_start = i * chunk_size
-                time_bin_end = (i + 1) * chunk_size
-                time_bin_str = f"{time_bin_start}-{time_bin_end}"
-                
-                row = [time_bin_str]
-                # Add distance per bin
-                if distances_per_bin and i < len(distances_per_bin):
-                    row.append(round(distances_per_bin[i], 3))
-                else:
+        # Prepare data rows
+        data_rows = []
+        for i in range(num_rows):
+            # Create time bin string based on chunk size
+            # Bins start at chunk_size because first chunk (0 to chunk_size) is used for baseline
+            time_bin_start = i * chunk_size
+            time_bin_end = (i + 1) * chunk_size
+            time_bin_str = f"{time_bin_start}-{time_bin_end}"
+            
+            row = [time_bin_str]
+            # Add distance per bin
+            if distances_per_bin and i < len(distances_per_bin):
+                row.append(round(distances_per_bin[i], 3))
+            else:
+                row.append("")
+            # Add cumulative distance
+            if cumulative_distances and i < len(cumulative_distances):
+                row.append(round(cumulative_distances[i], 3))
+            else:
+                row.append("")
+            band_values = []
+            for _, label in bands:
+                val = band_arrays[label][i] if i < len(band_arrays[label]) else ""
+                band_values.append(val)
+            # Append band values
+            row.extend(band_values)
+            # Compute total power across bands at this row (ignore blanks)
+            numeric_vals = [float(v) for v in band_values if v != ""]
+            total_power = sum(numeric_vals)
+            # Compute per-band percentages
+            for v in band_values:
+                if v == "" or total_power == 0:
                     row.append("")
-                # Add cumulative distance
-                if cumulative_distances and i < len(cumulative_distances):
-                    row.append(round(cumulative_distances[i], 3))
                 else:
-                    row.append("")
-                band_values = []
-                for _, label in bands:
-                    val = band_arrays[label][i] if i < len(band_arrays[label]) else ""
-                    band_values.append(val)
-                # Append band values
-                row.extend(band_values)
-                # Compute total power across bands at this row (ignore blanks)
-                numeric_vals = [float(v) for v in band_values if v != ""]
-                total_power = sum(numeric_vals)
-                # Compute per-band percentages
-                for v in band_values:
-                    if v == "" or total_power == 0:
-                        row.append("")
-                    else:
-                        row.append(round((float(v) / total_power) * 100.0, 3))
-                writer.writerow(row)
-        QMessageBox.information(self, "Save Complete", f"Data saved to:\n{out_csv}")
+                    row.append(round((float(v) / total_power) * 100.0, 3))
+            data_rows.append(row)
+        
+        # Write Excel or CSV
+        if use_excel:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = 'SSM Data'
+            ws.append(header)
+            for row in data_rows:
+                ws.append(row)
+            wb.save(out_file)
+            QMessageBox.information(self, "Save Complete", f"Data saved to:\n{out_file}\n\nFormat: Excel")
+        else:
+            with open(out_file, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                for row in data_rows:
+                    writer.writerow(row)
+            QMessageBox.information(self, "Save Complete", f"Data saved to:\n{out_file}\n\nFormat: CSV (openpyxl not installed)")
             
     # ------------------------------------------- #
     
@@ -1269,13 +1764,19 @@ class frequencyPlotWindow(QWidget):
             return description. 
         '''
 
-        self.freq_dict = data[0]    # Grab frequency dictionary
-        self.plot_data = data[1]    # Grab graph plot data
-        self.images = self.freq_dict[self.frequencyBand]    # Grab frequency maps
-        self.pos_t = data[2]                                
-        self.scaling_factor_crossband = data[3]             # Scaling factor crossband dictionary
-        self.chunk_powers_data = data[4]                    # Array of chunk power data
+        # Support both legacy (6-tuple) and new (7-tuple with binned_data)
+        self.freq_dict = data[0]
+        self.plot_data = data[1]
+        self.images = self.freq_dict[self.frequencyBand]
+        self.pos_t = data[2]
+        self.scaling_factor_crossband = data[3]
+        self.chunk_powers_data = data[4]
         self.tracking_data = data[5]
+        self.binned_data = data[6] if len(data) > 6 else None
+        
+        # Update the binned analysis window if it's open
+        if self.binned_analysis_window is not None and self.binned_analysis_window.isVisible():
+            self.binned_analysis_window.updateBinnedData(self.binned_data, self.files, self.active_folder)
         
         # Slider limits
         self.slider.setMinimum(0)
@@ -1287,6 +1788,87 @@ class frequencyPlotWindow(QWidget):
         self.updatePowerDisplay(0)
         
         print("Data loaded")
+
+    # ------------------------------------------- #
+    
+    def openBinnedAnalysisWindow(self):
+        '''Open the separate binned analysis studio window'''
+        if not hasattr(self, 'binned_data') or self.binned_data is None:
+            QMessageBox.information(
+                self, 
+                'Binned Analysis Studio', 
+                'No binned data available yet. Please run a session first.'
+            )
+            return
+        
+        # Create or show existing window
+        if self.binned_analysis_window is None or not self.binned_analysis_window.isVisible():
+            self.binned_analysis_window = BinnedAnalysisWindow(
+                parent=self,
+                binned_data=self.binned_data,
+                files=self.files,
+                active_folder=self.active_folder
+            )
+        
+        self.binned_analysis_window.show()
+        self.binned_analysis_window.raise_()
+        self.binned_analysis_window.activateWindow()
+
+    # ------------------------------------------- #
+    
+    def showBinnedAnalysis(self):
+        '''Generate and display 4x4 binned analysis heatmap in a modal panel.'''
+        if not hasattr(self, 'binned_data') or self.binned_data is None:
+            QMessageBox.information(self, 'Binned Analysis', 'No binned analysis available yet. Please run a session first.')
+            return
+        try:
+            # Save visualization to a temporary path in the active folder
+            out_dir = self.active_folder or os.getcwd()
+            base_name = os.path.splitext(os.path.basename(self.files[1] or 'output'))[0]
+            viz_path = os.path.join(out_dir, f"{base_name}_binned_heatmap.png")
+            visualize_binned_analysis(self.binned_data, save_path=viz_path)
+            # Show in a modal dialog with responsive sizing
+            dlg = QDialog(self)
+            dlg.setWindowTitle('4x4 Binned Analysis Heatmap')
+            vbox = QVBoxLayout(dlg)
+            
+            # Create a scroll area for responsive sizing
+            scroll = QScrollArea(dlg)
+            scroll.setWidgetResizable(True)
+            img_label = QLabel()
+            pix = QPixmap(viz_path)
+            img_label.setPixmap(pix)
+            img_label.setScaledContents(False)
+            scroll.setWidget(img_label)
+            vbox.addWidget(scroll)
+            
+            # Get available screen geometry and size dialog to fit within 70% of screen
+            screen_geometry = QDesktopWidget().availableGeometry()
+            max_width = int(screen_geometry.width() * 0.7)
+            max_height = int(screen_geometry.height() * 0.7)
+            # Ensure minimum reasonable size
+            dlg_width = min(max_width, max(600, pix.width() + 50))
+            dlg_height = min(max_height, max(400, pix.height() + 50))
+            dlg.resize(dlg_width, dlg_height)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, 'Binned Analysis', f'Failed to render binned analysis: {str(e)}')
+
+    # ------------------------------------------- #
+    
+    def exportBinnedCsvs(self):
+        '''Re-export binned CSVs on demand via the Options menu.'''
+        if not hasattr(self, 'binned_data') or self.binned_data is None:
+            QMessageBox.information(self, 'Export Binned CSVs', 'No binned analysis available yet. Please run a session first.')
+            return
+        try:
+            out_dir = self.active_folder or os.getcwd()
+            base_name = os.path.splitext(os.path.basename(self.files[1] or 'output'))[0]
+            output_prefix = os.path.join(out_dir, f"{base_name}_binned")
+            export_binned_analysis_to_csv(self.binned_data, output_prefix)
+            QMessageBox.information(self, 'Export Binned CSVs', f'Exported binned CSVs to:\n{output_prefix}_*.csv')
+        except Exception as e:
+            QMessageBox.warning(self, 'Export Binned CSVs', f'Failed to export binned CSVs: {str(e)}')
         
 # =========================================================================== #         
 

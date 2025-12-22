@@ -13,9 +13,11 @@ import numpy as np
 from pathlib import Path
 import gc  # Garbage collection for memory management
 import psutil  # For memory monitoring
+import subprocess
 
 # Set matplotlib to non-interactive backend BEFORE importing anything else
 import matplotlib
+from core.processors.spectral_functions import export_binned_analysis_to_csv, visualize_binned_analysis, export_binned_analysis_jpgs
 matplotlib.use('Agg')  # Use Agg backend - no display needed
 import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'  # Set Qt to offscreen mode
@@ -148,7 +150,14 @@ def find_recording_files(directory):
 
 def export_to_csv(output_path, pos_t, chunk_powers_data, chunk_size, ppm, 
                   pos_x_chunks, pos_y_chunks):
-    """Export analysis results to CSV"""
+    """Export analysis results to Excel (or CSV fallback)"""
+    
+    # Try to use Excel; fallback to CSV
+    try:
+        import openpyxl
+        use_excel = True
+    except ImportError:
+        use_excel = False
     
     bands = [
         ("Delta", "Avg Delta Power"),
@@ -206,51 +215,65 @@ def export_to_csv(output_path, pos_t, chunk_powers_data, chunk_size, ppm,
         arr = np.array(chunk_powers_data.get(key, [])).reshape(-1)
         band_arrays[label] = arr
     
-    # Write CSV
+    # Prepare header and data rows
     header = ["Time Bin (s)", "Distance Per Bin (cm)", "Cumulative Distance (cm)"] + band_labels + percent_labels
+    data_rows = []
     
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
+    for i in range(num_rows):
+        time_bin_start = i * chunk_size
+        time_bin_end = (i + 1) * chunk_size
+        time_bin_str = f"{time_bin_start}-{time_bin_end}"
         
-        for i in range(num_rows):
-            time_bin_start = i * chunk_size
-            time_bin_end = (i + 1) * chunk_size
-            time_bin_str = f"{time_bin_start}-{time_bin_end}"
-            
-            row = [time_bin_str]
-            
-            # Add distance per bin
-            if distances_per_bin and i < len(distances_per_bin):
-                row.append(round(distances_per_bin[i], 3))
-            else:
+        row = [time_bin_str]
+        
+        # Add distance per bin
+        if distances_per_bin and i < len(distances_per_bin):
+            row.append(round(distances_per_bin[i], 3))
+        else:
+            row.append("")
+        
+        # Add cumulative distance
+        if cumulative_distances and i < len(cumulative_distances):
+            row.append(round(cumulative_distances[i], 3))
+        else:
+            row.append("")
+        
+        band_values = []
+        for _, label in bands:
+            val = band_arrays[label][i] if i < len(band_arrays[label]) else ""
+            band_values.append(val)
+        
+        row.extend(band_values)
+        
+        numeric_vals = [float(v) for v in band_values if v != ""]
+        total_power = sum(numeric_vals)
+        
+        for v in band_values:
+            if v == "" or total_power == 0:
                 row.append("")
-            
-            # Add cumulative distance
-            if cumulative_distances and i < len(cumulative_distances):
-                row.append(round(cumulative_distances[i], 3))
             else:
-                row.append("")
-            
-            band_values = []
-            for _, label in bands:
-                val = band_arrays[label][i] if i < len(band_arrays[label]) else ""
-                band_values.append(val)
-            
-            row.extend(band_values)
-            
-            numeric_vals = [float(v) for v in band_values if v != ""]
-            total_power = sum(numeric_vals)
-            
-            for v in band_values:
-                if v == "" or total_power == 0:
-                    row.append("")
-                else:
-                    row.append(round((float(v) / total_power) * 100.0, 3))
-            
-            writer.writerow(row)
+                row.append(round((float(v) / total_power) * 100.0, 3))
+        
+        data_rows.append(row)
     
-    print(f"✓ CSV exported to: {output_path}")
+    # Write Excel or CSV
+    if use_excel:
+        output_file = output_path.replace('.csv', '.xlsx')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = 'SSM Data'
+        ws.append(header)
+        for row in data_rows:
+            ws.append(row)
+        wb.save(output_file)
+        print(f"✓ Excel exported to: {output_file}")
+    else:
+        with open(output_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            for row in data_rows:
+                writer.writerow(row)
+        print(f"✓ CSV exported to: {output_path} (openpyxl not installed)")
 
 
 def main():
@@ -310,6 +333,12 @@ Examples:
         type=str,
         default="hann",
         help="Window type for FFT (default: hann)"
+    )
+    
+    parser.add_argument(
+        "--export-binned-jpgs",
+        action="store_true",
+        help="Export per-chunk JPG visualizations for binned analysis (mean power, percent power, dominant band per chunk; occupancy once)"
     )
     
     args = parser.parse_args()
@@ -398,7 +427,8 @@ Examples:
                 args.chunk_size,
                 low_speed,
                 high_speed,
-                args.window
+                args.window,
+                export_binned_jpgs=args.export_binned_jpgs
             )
         except Exception as e:
             print(f"\n✗ Error during processing: {e}")
@@ -414,7 +444,7 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Processing timeout exceeded")
 
 def process_single_file(electrophys_file, pos_file, output_dir, ppm, chunk_size, 
-                        low_speed, high_speed, window_type, timeout_seconds=300):
+                        low_speed, high_speed, window_type, export_binned_jpgs=False, timeout_seconds=300):
     """Process a single EEG/EGF file with timeout protection"""
     
     # Monitor memory at start
@@ -455,7 +485,12 @@ def process_single_file(electrophys_file, pos_file, output_dir, ppm, chunk_size,
         traceback.print_exc()
         raise
     
-    freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_pows_data, tracking_data = result
+    # Unpack legacy/new result signature
+    if len(result) == 6:
+        freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_pows_data, tracking_data = result
+        binned_data = None
+    else:
+        freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_pows_data, tracking_data, binned_data = result
     
     print("[3/5] Extracting tracking data...")
     # Extract tracking data
@@ -472,7 +507,70 @@ def process_single_file(electrophys_file, pos_file, output_dir, ppm, chunk_size,
         pos_x_chunks,
         pos_y_chunks
     )
-    print("[5/5] CSV export complete")
+    print("[5/5] SSM data export complete")
+
+    # Export binned analysis outputs if available
+    try:
+        if binned_data is not None:
+            # Determine output location based on whether per-chunk export is requested
+            if export_binned_jpgs:
+                # Export everything (Excel + JPGs) to subfolder
+                output_folder = os.path.join(output_dir, f"{base_name}_binned_analysis")
+                if not os.path.exists(output_folder):
+                    os.makedirs(output_folder, exist_ok=True)
+                output_prefix = os.path.join(output_folder, base_name + "_binned")
+                
+                print("[+] Exporting 4x4 binned analysis with per-chunk JPGs and Excel...")
+                
+                # Export Excel files
+                result = export_binned_analysis_to_csv(binned_data, output_prefix)
+                if result.get('format') == 'csv' and result.get('reason') == 'openpyxl_not_installed':
+                    print("  ⚠ Excel export unavailable (openpyxl missing). Attempting install...")
+                    try:
+                        proc = subprocess.run([sys.executable, '-m', 'pip', 'install', 'openpyxl'], capture_output=True, text=True)
+                        if proc.returncode == 0:
+                            print("  ✓ openpyxl installed. Re-exporting to Excel...")
+                            result = export_binned_analysis_to_csv(binned_data, output_prefix)
+                        else:
+                            print("  ✗ Failed to install openpyxl. Keeping CSV export.")
+                    except Exception as ie:
+                        print(f"  ✗ Error installing openpyxl: {ie}")
+                
+                print(f"[+] Exported binned analysis Excel files ({result.get('format','csv').upper()})")
+                for filepath in result.get('files', []):
+                    print(f"    • {os.path.basename(filepath)}")
+                
+                # Export JPGs
+                try:
+                    print("[+] Exporting per-chunk JPG visualizations...")
+                    jpg_count = export_binned_analysis_jpgs(binned_data, output_folder, base_name)
+                    print(f"[+] Exported {jpg_count} JPG visualizations")
+                except Exception as e:
+                    print(f"  ⚠ Failed to export JPGs: {e}")
+                
+                # Export combined heatmap
+                visualize_binned_analysis(binned_data, save_path=os.path.join(output_folder, f"{base_name}_binned_heatmap.jpg"))
+                print(f"[+] All binned analysis files exported to: {output_folder}")
+            else:
+                # Standard export: Excel + single heatmap to main output dir
+                output_prefix = os.path.splitext(output_csv)[0] + "_binned"
+                print("[+] Exporting 4x4 binned analysis data and visualization...")
+                result = export_binned_analysis_to_csv(binned_data, output_prefix)
+                if result.get('format') == 'csv' and result.get('reason') == 'openpyxl_not_installed':
+                    print("  ⚠ Excel export unavailable (openpyxl missing). Attempting install...")
+                    try:
+                        proc = subprocess.run([sys.executable, '-m', 'pip', 'install', 'openpyxl'], capture_output=True, text=True)
+                        if proc.returncode == 0:
+                            print("  ✓ openpyxl installed. Re-exporting to Excel...")
+                            result = export_binned_analysis_to_csv(binned_data, output_prefix)
+                        else:
+                            print("  ✗ Failed to install openpyxl. Keeping CSV export.")
+                    except Exception as ie:
+                        print(f"  ✗ Error installing openpyxl: {ie}")
+                visualize_binned_analysis(binned_data, save_path=output_prefix + "_heatmap.jpg")
+                print(f"[+] Binned analysis export complete ({result.get('format','csv').upper()})")
+    except Exception as e:
+        print(f"⚠ Binned analysis export failed: {e}")
     
     # Print summary
     print(f"✓ Complete - {len(pos_t)} time bins processed")

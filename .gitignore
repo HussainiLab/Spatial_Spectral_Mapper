@@ -141,3 +141,7 @@ dmypy.json
 .venv/
 .env/
 .winenv/
+
+# Project-specific ignores
+ssm_git_venv/
+desktop.ini

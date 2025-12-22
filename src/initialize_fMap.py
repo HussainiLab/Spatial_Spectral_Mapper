@@ -112,6 +112,22 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
     
     print("  → Computing tracking chunks...")
     pos_x_chunks, pos_y_chunks = compute_tracking_chunks(new_pos_x, new_pos_y, new_pos_t, chunk_size)
+    # Compute 4x4 binned analysis (multi-band, time-tracked)
+    try:
+        self.signals.text_progress.emit("Computing 4x4 binned analysis...")
+        binned_data = compute_binned_freq_analysis(
+            new_pos_x, new_pos_y, new_pos_t,
+            fs=fs,
+            chunks=chunks,
+            chunk_size=chunk_size,
+            chunk_pows_perBand=chunk_pows_perBand,
+            scaling_factor_perBand=scaling_factor_perBand
+        )
+        self.signals.text_progress.emit("4x4 binned analysis complete!")
+    except Exception as e:
+        binned_data = None
+        self.signals.text_progress.emit(f"Binned analysis skipped: {str(e)}")
+
     self.signals.text_progress.emit("Data loaded!")
     
-    return freq_maps, plot_data, chosen_times, scaling_factor_crossband, chunk_pows_perBand, (pos_x_chunks, pos_y_chunks)
+    return freq_maps, plot_data, chosen_times, scaling_factor_crossband, chunk_pows_perBand, (pos_x_chunks, pos_y_chunks), binned_data
