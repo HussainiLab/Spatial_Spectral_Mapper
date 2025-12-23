@@ -232,8 +232,10 @@ class BatchWorkerThread(QThread):
         if len(result) == 6:
             freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_powers_data, tracking_data = result
             binned_data = None
-        else:
+        elif len(result) == 7:
             freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_powers_data, tracking_data, binned_data = result
+        else:
+            freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_powers_data, tracking_data, binned_data, arena_shape = result
         
         base_name = os.path.splitext(os.path.basename(electrophys_file))[0]
         output_csv = os.path.join(self.output_dir, f"{base_name}_SSM.csv")
@@ -376,7 +378,8 @@ class BinnedAnalysisWindow(QDialog):
         main_layout = QVBoxLayout(self)
         
         # Top section: Title
-        title_label = QLabel("4×4 Binned Frequency Analysis Studio")
+        self.title_label = QLabel("Binned Frequency Analysis Studio")
+        title_label = self.title_label
         title_label.setFont(QFont("Times New Roman", 16, QFont.Bold))
         main_layout.addWidget(title_label)
         
@@ -470,6 +473,11 @@ class BinnedAnalysisWindow(QDialog):
         # Initial render
         if self.binned_data:
             self.renderChunkViews()
+            
+        if self.binned_data and self.binned_data.get('type') == 'polar':
+            self.title_label.setText("Polar Binned Analysis (16 Bins)")
+        else:
+            self.title_label.setText("4×4 Binned Frequency Analysis Studio")
     
     def getOutputFolder(self):
         '''Get or create the binned analysis output folder'''
@@ -501,7 +509,10 @@ class BinnedAnalysisWindow(QDialog):
         
         try:
             # Render frequency band power heatmap in memory
-            fig_power, axes_power = self._create_power_heatmap(self.current_chunk, self.show_percent_power)
+            if self.binned_data.get('type') == 'polar':
+                fig_power, _ = self._create_polar_power_heatmap(self.current_chunk, self.show_percent_power)
+            else:
+                fig_power, _ = self._create_power_heatmap(self.current_chunk, self.show_percent_power)
             power_pixmap = self._fig_to_pixmap(fig_power)
             if not power_pixmap.isNull():
                 if power_pixmap.width() > 1000:
@@ -509,7 +520,10 @@ class BinnedAnalysisWindow(QDialog):
                 self.power_label.setPixmap(power_pixmap)
             
             # Render occupancy and dominant band in memory
-            fig_occ, _ = self._create_occupancy_heatmap(self.current_chunk)
+            if self.binned_data.get('type') == 'polar':
+                fig_occ, _ = self._create_polar_occupancy_heatmap(self.current_chunk)
+            else:
+                fig_occ, _ = self._create_occupancy_heatmap(self.current_chunk)
             occ_pixmap = self._fig_to_pixmap(fig_occ)
             if not occ_pixmap.isNull():
                 if occ_pixmap.width() > 600:
@@ -611,6 +625,60 @@ class BinnedAnalysisWindow(QDialog):
         plt.tight_layout()
         return fig, axes
     
+    def _create_polar_power_heatmap(self, chunk_idx, show_percent=False):
+        '''Create polar power heatmap figure'''
+        n_chunks = self.binned_data['time_chunks']
+        if chunk_idx < 0 or chunk_idx >= n_chunks:
+            chunk_idx = max(0, min(chunk_idx, n_chunks - 1))
+            
+        fig, axes = plt.subplots(2, 4, figsize=(16, 8), subplot_kw={'projection': 'polar'})
+        power_type = "Percent Power" if show_percent else "Power"
+        fig.suptitle(f'Polar Bins - Chunk {chunk_idx} (Frequency Band {power_type})', 
+                     fontsize=14, fontweight='bold')
+        
+        bands = self.binned_data['bands']
+        
+        # Setup grid
+        theta = np.linspace(-np.pi, np.pi, 9)
+        r = [0, 0.5, 1]
+        T, R = np.meshgrid(theta, r)
+        
+        # Flatten axes
+        ax_flat = axes.flatten()
+        
+        for idx, band in enumerate(bands):
+            if idx >= len(ax_flat): break
+            ax = ax_flat[idx]
+            
+            # Data shape (2, 8) -> (Rings, Sectors)
+            data = self.binned_data['bin_power_timeseries'][band][:, :, chunk_idx]
+            
+            if show_percent:
+                total_power = sum(self.binned_data['bin_power_timeseries'][b][:, :, chunk_idx] 
+                                for b in bands)
+                data = np.divide(data, total_power, where=total_power>0, 
+                                       out=np.zeros_like(data)) * 100
+            
+            # pcolormesh expects data to match grid cells
+            # T, R shape is (3, 9). Data shape is (2, 8). Perfect.
+            im = ax.pcolormesh(T, R, data, cmap='hot', shading='flat')
+            
+            ax.set_title(f'{band}')
+            ax.set_yticklabels([])
+            ax.set_xticklabels([])
+            ax.grid(True, alpha=0.3)
+            
+            # Add colorbar
+            cbar = plt.colorbar(im, ax=ax, pad=0.1, shrink=0.8)
+            cbar.set_label('%' if show_percent else 'Power', fontsize=8)
+
+        # Hide unused subplots
+        for idx in range(len(bands), len(ax_flat)):
+            ax_flat[idx].axis('off')
+            
+        plt.tight_layout()
+        return fig, axes
+
     def _create_occupancy_heatmap(self, chunk_idx):
         '''Create occupancy and dominant band heatmap figure (does not save)'''
         n_chunks = self.binned_data['time_chunks']
@@ -653,6 +721,49 @@ class BinnedAnalysisWindow(QDialog):
         plt.tight_layout()
         return fig, axes
     
+    def _create_polar_occupancy_heatmap(self, chunk_idx):
+        '''Create polar occupancy and dominant band heatmap'''
+        n_chunks = self.binned_data['time_chunks']
+        if chunk_idx < 0 or chunk_idx >= n_chunks:
+            chunk_idx = max(0, min(chunk_idx, n_chunks - 1))
+        
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), subplot_kw={'projection': 'polar'})
+        
+        # Setup grid
+        theta = np.linspace(-np.pi, np.pi, 9)
+        r = [0, 0.5, 1]
+        T, R = np.meshgrid(theta, r)
+        
+        # Left: Occupancy
+        occupancy = self.binned_data['bin_occupancy']
+        im1 = axes[0].pcolormesh(T, R, occupancy, cmap='viridis', shading='flat')
+        axes[0].set_title('Bin Occupancy')
+        axes[0].set_yticklabels([])
+        cbar1 = plt.colorbar(im1, ax=axes[0], pad=0.1)
+        cbar1.set_label('Samples', fontsize=9)
+        
+        # Right: Dominant Band
+        dominant_chunk = self.binned_data['bin_dominant_band'][chunk_idx]
+        bands = self.binned_data['bands']
+        band_map = {band: idx for idx, band in enumerate(bands)}
+        
+        numeric_dominant = np.zeros((2, 8))
+        for r_idx in range(2):
+            for s_idx in range(8):
+                band = dominant_chunk[r_idx, s_idx]
+                numeric_dominant[r_idx, s_idx] = band_map.get(band, 0)
+        
+        im2 = axes[1].pcolormesh(T, R, numeric_dominant, cmap='tab10', shading='flat',
+                                 vmin=0, vmax=len(bands)-1)
+        axes[1].set_title(f'Dominant Band - Chunk {chunk_idx}')
+        axes[1].set_yticklabels([])
+        
+        cbar2 = plt.colorbar(im2, ax=axes[1], ticks=range(len(bands)), pad=0.1)
+        cbar2.set_ticklabels(bands, fontsize=8)
+        
+        plt.tight_layout()
+        return fig, axes
+
     def updateBinnedData(self, binned_data, files=None, active_folder=None):
         '''Update binned data when new session is loaded'''
         self.binned_data = binned_data
@@ -669,6 +780,11 @@ class BinnedAnalysisWindow(QDialog):
             self.current_chunk = 0
             self.chunk_display_label.setText(f"0 / {max_chunks - 1}")
             self.renderChunkViews()
+            
+            if binned_data.get('type') == 'polar':
+                self.title_label.setText("Polar Binned Analysis (16 Bins)")
+            else:
+                self.title_label.setText("4×4 Binned Frequency Analysis Studio")
         
         self.status_label.setText("Data updated. Ready for analysis.")
     
@@ -690,7 +806,10 @@ class BinnedAnalysisWindow(QDialog):
             
             # Export mean power for all chunks (JPG, quality 85)
             for chunk_idx in range(n_chunks):
-                fig, _ = self._create_power_heatmap(chunk_idx, show_percent=False)
+                if self.binned_data.get('type') == 'polar':
+                    fig, _ = self._create_polar_power_heatmap(chunk_idx, show_percent=False)
+                else:
+                    fig, _ = self._create_power_heatmap(chunk_idx, show_percent=False)
                 jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_mean_power.jpg")
                 fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
                 plt.close(fig)
@@ -698,7 +817,10 @@ class BinnedAnalysisWindow(QDialog):
             
             # Export percent power for all chunks (JPG, quality 85)
             for chunk_idx in range(n_chunks):
-                fig, _ = self._create_power_heatmap(chunk_idx, show_percent=True)
+                if self.binned_data.get('type') == 'polar':
+                    fig, _ = self._create_polar_power_heatmap(chunk_idx, show_percent=True)
+                else:
+                    fig, _ = self._create_power_heatmap(chunk_idx, show_percent=True)
                 jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_percent_power.jpg")
                 fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
                 plt.close(fig)
@@ -706,12 +828,19 @@ class BinnedAnalysisWindow(QDialog):
             
             # Export occupancy only once (JPG, quality 85) - use same colormap as GUI
             fig_occ = plt.figure(figsize=(6, 5))
-            ax = fig_occ.add_subplot(111)
+            is_polar = self.binned_data.get('type') == 'polar'
+            ax = fig_occ.add_subplot(111, projection='polar' if is_polar else None)
             occ = self.binned_data['bin_occupancy']
-            im = ax.imshow(occ, cmap='viridis', aspect='auto')
+            
+            if is_polar:
+                theta = np.linspace(-np.pi, np.pi, 9)
+                r = [0, 0.5, 1]
+                T, R = np.meshgrid(theta, r)
+                im = ax.pcolormesh(T, R, occ, cmap='viridis', shading='flat')
+            else:
+                im = ax.imshow(occ, cmap='viridis', aspect='auto')
+                
             ax.set_title('Bin Occupancy (Total Time Spent)', fontsize=12, fontweight='bold')
-            ax.set_xticks([0, 1, 2, 3])
-            ax.set_yticks([0, 1, 2, 3])
             ax.grid(True, alpha=0.3)
             cbar = plt.colorbar(im, ax=ax)
             cbar.set_label('Occupancy (samples)', fontsize=9)
@@ -722,7 +851,10 @@ class BinnedAnalysisWindow(QDialog):
             
             # Export dominant band per chunk (JPG, quality 85)
             for chunk_idx in range(n_chunks):
-                fig, _ = self._create_occupancy_heatmap(chunk_idx)
+                if is_polar:
+                    fig, _ = self._create_polar_occupancy_heatmap(chunk_idx)
+                else:
+                    fig, _ = self._create_occupancy_heatmap(chunk_idx)
                 jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_dominant_band.jpg")
                 fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
                 plt.close(fig)
@@ -755,7 +887,13 @@ class BinnedAnalysisWindow(QDialog):
             
             output_folder = self.getOutputFolder()
             base_name = os.path.splitext(os.path.basename(self.files[1] or 'output'))[0]
-            result = export_binned_analysis_to_csv(self.binned_data, os.path.join(output_folder, f"{base_name}_binned"))
+            
+            if self.binned_data.get('type') == 'polar':
+                # Fallback for polar data since core export might not support it
+                QMessageBox.information(self, 'Export', 'Excel export for polar data is not yet fully supported. Exporting JPGs instead.')
+                return
+            else:
+                result = export_binned_analysis_to_csv(self.binned_data, os.path.join(output_folder, f"{base_name}_binned"))
             self.status_label.setText(f"✓ Data exported ({result['format']})")
             file_list = "\n".join([f"  • {os.path.basename(p)}" for p in result['files']])
             if result.get('format') == 'csv' and result.get('reason') == 'openpyxl_not_installed':
@@ -1773,6 +1911,12 @@ class frequencyPlotWindow(QWidget):
         self.chunk_powers_data = data[4]
         self.tracking_data = data[5]
         self.binned_data = data[6] if len(data) > 6 else None
+        
+        # Update tracking label with arena shape if available
+        if len(data) > 7:
+            self.tracking_Label.setText(f"Animal tracking<br><span style='font-size:12pt'>{data[7]}</span>")
+        else:
+            self.tracking_Label.setText("Animal tracking")
         
         # Update the binned analysis window if it's open
         if self.binned_analysis_window is not None and self.binned_analysis_window.isVisible():

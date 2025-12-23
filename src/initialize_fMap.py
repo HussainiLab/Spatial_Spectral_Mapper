@@ -16,6 +16,150 @@ from core.processors.spectral_functions import *
 
 # =========================================================================== #
 
+def detect_arena_shape(pos_x, pos_y):
+    """
+    Detects if the arena is circular or rectangular based on trajectory bounds.
+    Returns a string describing the shape.
+    """
+    # Ensure numpy arrays
+    x = np.array(pos_x)
+    y = np.array(pos_y)
+    
+    if len(x) < 100:
+        return "Unknown (insufficient data)"
+        
+    # Calculate bounds
+    min_x, max_x = np.min(x), np.max(x)
+    min_y, max_y = np.min(y), np.max(y)
+    
+    width = max_x - min_x
+    height = max_y - min_y
+    
+    if width == 0 or height == 0:
+        return "Unknown (degenerate)"
+        
+    # Normalize coordinates to [-1, 1]
+    # Center at 0
+    norm_x = 2 * (x - min_x) / width - 1
+    norm_y = 2 * (y - min_y) / height - 1
+    
+    # Calculate radius from center
+    r = np.sqrt(norm_x**2 + norm_y**2)
+    
+    # Check 99th percentile of radius
+    # For a circle, this should be close to 1.0
+    # For a square/rectangle, this should be closer to sqrt(2) ≈ 1.41 (if corners are visited)
+    r_99 = np.percentile(r, 99)
+    
+    # Aspect ratio
+    aspect_ratio = width / height
+    
+    shape_type = ""
+    if 0.85 < aspect_ratio < 1.15:
+        if r_99 > 1.15:
+            shape_type = "Square"
+        else:
+            shape_type = "Circle"
+    else:
+        if r_99 > 1.15:
+            shape_type = "Rectangle"
+        else:
+            shape_type = "Ellipse"
+            
+    return f"{shape_type} (AR: {aspect_ratio:.2f}, R99: {r_99:.2f})"
+
+def compute_polar_binned_analysis(pos_x, pos_y, pos_t, fs, chunks, chunk_size, chunk_pows_perBand, scaling_factor_perBand):
+    """
+    Computes binned analysis using polar coordinates (2 rings, 8 sectors = 16 bins).
+    """
+    # 1. Preprocess positions
+    x = np.array(pos_x)
+    y = np.array(pos_y)
+    t = np.array(pos_t)
+    
+    # Center and normalize to [-1, 1]
+    min_x, max_x = np.min(x), np.max(x)
+    min_y, max_y = np.min(y), np.max(y)
+    width = max_x - min_x
+    height = max_y - min_y
+    
+    if width == 0: width = 1
+    if height == 0: height = 1
+    
+    nx = 2 * (x - min_x) / width - 1
+    ny = 2 * (y - min_y) / height - 1
+    
+    # Convert to polar
+    r = np.sqrt(nx**2 + ny**2)
+    theta = np.arctan2(ny, nx) # [-pi, pi]
+    
+    # 2. Define Bins
+    # Rings: 0-0.5 (Inner), 0.5-inf (Outer)
+    n_rings = 2
+    r_bins = [0, 0.5, np.inf]
+    r_indices = np.digitize(r, r_bins) - 1 
+    r_indices = np.clip(r_indices, 0, n_rings - 1)
+    
+    # Sectors: 8 bins from -pi to pi
+    n_sectors = 8
+    theta_edges = np.linspace(-np.pi, np.pi, n_sectors + 1)
+    theta_indices = np.digitize(theta, theta_edges) - 1
+    theta_indices = np.clip(theta_indices, 0, n_sectors - 1)
+    
+    # 3. Process Chunks
+    n_chunks = len(chunks)
+    bands = list(chunk_pows_perBand.keys())
+    
+    # Initialize outputs: Shape (Rings, Sectors, Time)
+    bin_power_timeseries = {band: np.zeros((n_rings, n_sectors, n_chunks)) for band in bands}
+    bin_occupancy = np.zeros((n_rings, n_sectors))
+    bin_dominant_band = np.empty((n_chunks, n_rings, n_sectors), dtype=object)
+    
+    for i in range(n_chunks):
+        t_start = i * chunk_size
+        t_end = (i + 1) * chunk_size
+        
+        mask = (t >= t_start) & (t < t_end)
+        if not np.any(mask):
+            continue
+            
+        chunk_r_idx = r_indices[mask]
+        chunk_th_idx = theta_indices[mask]
+        
+        # Count occupancy
+        flat_indices = chunk_r_idx * n_sectors + chunk_th_idx
+        counts = np.bincount(flat_indices, minlength=n_rings*n_sectors)
+        chunk_occupancy = counts.reshape((n_rings, n_sectors))
+        bin_occupancy += chunk_occupancy
+        
+        # Mask of visited bins in this chunk
+        visited_mask = chunk_occupancy > 0
+        
+        # Distribute power
+        for band in bands:
+            if i < len(chunk_pows_perBand[band]):
+                power_val = chunk_pows_perBand[band][i]
+                if isinstance(power_val, (list, np.ndarray)):
+                    power_val = np.mean(power_val)
+                bin_power_timeseries[band][:, :, i] = visited_mask * power_val
+
+    # Determine dominant band
+    # (Simplified: just string label of max band)
+    for i in range(n_chunks):
+        for r_idx in range(n_rings):
+            for s_idx in range(n_sectors):
+                powers = {band: bin_power_timeseries[band][r_idx, s_idx, i] for band in bands}
+                bin_dominant_band[i, r_idx, s_idx] = max(powers, key=powers.get) if sum(powers.values()) > 0 else "None"
+
+    return {
+        'type': 'polar',
+        'time_chunks': n_chunks,
+        'bands': bands,
+        'bin_power_timeseries': bin_power_timeseries,
+        'bin_occupancy': bin_occupancy,
+        'bin_dominant_band': bin_dominant_band
+    }
+
 def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: str, 
                     low_speed: float, high_speed: float) -> tuple:
     
@@ -68,6 +212,13 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
     print("  → Loading position data...")
     # Extract position data and filter with speed filter settings
     pos_x, pos_y, pos_t, arena_size =  grab_position_data(pos_file , ppm)
+    
+    # Detect arena shape
+    arena_shape = detect_arena_shape(pos_x, pos_y)
+    print(f"  → Detected Arena Shape: {arena_shape}")
+    if hasattr(self, 'signals') and hasattr(self.signals, 'text_progress'):
+        self.signals.text_progress.emit(f"Arena Shape: {arena_shape}")
+    
     pos_v = speed2D(pos_x, pos_y, pos_t)
     new_pos_x, new_pos_y, new_pos_t = speed_bins(low_speed, high_speed, pos_v, pos_x, pos_y, pos_t)
     
@@ -112,22 +263,33 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
     
     print("  → Computing tracking chunks...")
     pos_x_chunks, pos_y_chunks = compute_tracking_chunks(new_pos_x, new_pos_y, new_pos_t, chunk_size)
-    # Compute 4x4 binned analysis (multi-band, time-tracked)
+    # Compute binned analysis (multi-band, time-tracked)
     try:
-        self.signals.text_progress.emit("Computing 4x4 binned analysis...")
-        binned_data = compute_binned_freq_analysis(
-            new_pos_x, new_pos_y, new_pos_t,
-            fs=fs,
-            chunks=chunks,
-            chunk_size=chunk_size,
-            chunk_pows_perBand=chunk_pows_perBand,
-            scaling_factor_perBand=scaling_factor_perBand
-        )
-        self.signals.text_progress.emit("4x4 binned analysis complete!")
+        if "Circle" in arena_shape or "Ellipse" in arena_shape:
+            self.signals.text_progress.emit("Computing polar binned analysis (16 bins)...")
+            binned_data = compute_polar_binned_analysis(
+                new_pos_x, new_pos_y, new_pos_t,
+                fs=fs,
+                chunks=chunks,
+                chunk_size=chunk_size,
+                chunk_pows_perBand=chunk_pows_perBand,
+                scaling_factor_perBand=scaling_factor_perBand
+            )
+        else:
+            self.signals.text_progress.emit("Computing 4x4 binned analysis...")
+            binned_data = compute_binned_freq_analysis(
+                new_pos_x, new_pos_y, new_pos_t,
+                fs=fs,
+                chunks=chunks,
+                chunk_size=chunk_size,
+                chunk_pows_perBand=chunk_pows_perBand,
+                scaling_factor_perBand=scaling_factor_perBand
+            )
+        self.signals.text_progress.emit("Binned analysis complete!")
     except Exception as e:
         binned_data = None
         self.signals.text_progress.emit(f"Binned analysis skipped: {str(e)}")
 
     self.signals.text_progress.emit("Data loaded!")
     
-    return freq_maps, plot_data, chosen_times, scaling_factor_crossband, chunk_pows_perBand, (pos_x_chunks, pos_y_chunks), binned_data
+    return freq_maps, plot_data, chosen_times, scaling_factor_crossband, chunk_pows_perBand, (pos_x_chunks, pos_y_chunks), binned_data, arena_shape

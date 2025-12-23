@@ -489,8 +489,10 @@ def process_single_file(electrophys_file, pos_file, output_dir, ppm, chunk_size,
     if len(result) == 6:
         freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_pows_data, tracking_data = result
         binned_data = None
-    else:
+    elif len(result) == 7:
         freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_pows_data, tracking_data, binned_data = result
+    else:
+        freq_maps, plot_data, pos_t, scaling_factor_crossband, chunk_pows_data, tracking_data, binned_data, arena_shape = result
     
     print("[3/5] Extracting tracking data...")
     # Extract tracking data
@@ -512,6 +514,10 @@ def process_single_file(electrophys_file, pos_file, output_dir, ppm, chunk_size,
     # Export binned analysis outputs if available
     try:
         if binned_data is not None:
+            if binned_data.get('type') == 'polar':
+                print("  ⚠ Polar binned analysis detected. Batch export for polar data is skipped (GUI only).")
+                return
+
             # Determine output location based on whether per-chunk export is requested
             if export_binned_jpgs:
                 # Export everything (Excel + JPGs) to subfolder
