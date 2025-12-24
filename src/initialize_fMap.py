@@ -94,9 +94,12 @@ def compute_polar_binned_analysis(pos_x, pos_y, pos_t, fs, chunks, chunk_size, c
     theta = np.arctan2(ny, nx) # [-pi, pi]
     
     # 2. Define Bins
-    # Rings: 0-0.5 (Inner), 0.5-inf (Outer)
+    # Rings: Equal-area split at r = 1/sqrt(2) ≈ 0.7071
+    # Inner ring (0 to 0.7071): area = pi * 0.5
+    # Outer ring (0.7071 to 1.0): area = pi * 0.5
     n_rings = 2
-    r_bins = [0, 0.5, np.inf]
+    equal_area_radius = 1.0 / np.sqrt(2.0)  # ≈ 0.7071
+    r_bins = [0, equal_area_radius, np.inf]
     r_indices = np.digitize(r, r_bins) - 1 
     r_indices = np.clip(r_indices, 0, n_rings - 1)
     
@@ -154,6 +157,8 @@ def compute_polar_binned_analysis(pos_x, pos_y, pos_t, fs, chunks, chunk_size, c
     return {
         'type': 'polar',
         'time_chunks': n_chunks,
+        'chunk_size': chunk_size,
+        'duration': float(t[-1]) if len(t) else float(n_chunks * chunk_size),
         'bands': bands,
         'bin_power_timeseries': bin_power_timeseries,
         'bin_occupancy': bin_occupancy,

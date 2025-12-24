@@ -182,8 +182,9 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
     scaling_factor_perBand = kwargs.get('scaling_factor_perBand', None)
     
     # Set kernel and std block sizes to about 20% of the map sizes in preparation for convolutional smoothing.
-    kernlen = int(256*0.2)
-    std = int(kernlen*0.2)
+    map_res = 200
+    kernlen = int(map_res * 0.2)
+    std = int(kernlen * 0.2)
 
     # Smooth via kernel convolution
     kernel = gkern(kernlen,std)
@@ -200,8 +201,8 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
     
     # Calculate the new dimensions of the frequncy map
     resize_ratio = np.abs(max_x - min_x) / np.abs(max_y - min_y)
-    # Ensure the largest dimension of the map is 256
-    base_resolution_scale = 256
+    # Ensure the largest dimension of the map is 200
+    base_resolution_scale = map_res
     
     # Adjust the map dimensions based on which side is longer or shorter
     if resize_ratio > 1:
@@ -212,14 +213,14 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
         x_resize = base_resolution_scale
         y_resize = int(np.ceil (base_resolution_scale*(1/resize_ratio)))
      
-    # If the map is perfectly symmetrical, set both sides to 256
+    # If the map is perfectly symmetrical, set both sides to 200
     else: 
         x_resize = base_resolution_scale
         y_resize = base_resolution_scale
     
-    # Equally part the x and y dimensions of the map into 256 spatial bins
-    row_values = np.linspace(min_x,max_x,256)
-    column_values = np.linspace(min_y,max_y,256)
+    # Equally part the x and y dimensions of the map into 200 spatial bins
+    row_values = np.linspace(min_x, max_x, map_res)
+    column_values = np.linspace(min_y, max_y, map_res)
     
     # Build chunk boundaries based on the EEG chunk count to avoid off-by-one drop
     n_chunks = len(chunks)
@@ -245,8 +246,8 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
         end_idx = boundaries[i + 1]
         
         # Initialize empty occupancy and eeg maps
-        occ_map_raw = np.zeros((256,256))
-        eeg_map_raw = np.zeros((256,256))
+        occ_map_raw = np.zeros((map_res, map_res))
+        eeg_map_raw = np.zeros((map_res, map_res))
         
         # Build the occupancy and eeg maps for the current time chunk
         for j in range(start_idx, end_idx):
@@ -333,11 +334,10 @@ def compute_scaling_and_tPowers(self, window: str, pos_x: np.ndarray, pos_y: np.
                 Array of power spectrum densities and frequencies per chunk
     '''
 
-    # Smooth via kernel convolution
-    # Set kernel and stdev block sizes to 20% map size
-    kernlen = int(256*0.2)
-    std = int(kernlen*0.2)
-    kernel = gkern(kernlen,std)
+    # Smooth via kernel convolution (keep consistent with map resolution of 200px)
+    kernlen = int(200 * 0.2)
+    std = int(kernlen * 0.2)
+    kernel = gkern(kernlen, std)
     
     # Create dictionary defining frequency bands and corresponding ranges in Hz
     freq_ranges = {'Delta': np.array([1, 3]), 
@@ -609,6 +609,8 @@ def compute_binned_freq_analysis(pos_x: np.ndarray, pos_y: np.ndarray, pos_t: np
         'x_bin_edges': x_bin_edges,
         'y_bin_edges': y_bin_edges,
         'time_chunks': n_time_chunks,
+        'chunk_size': chunk_size,
+        'duration': float(pos_t[-1]) if len(pos_t) else float(n_time_chunks * chunk_size),
         'bands': list(freq_ranges.keys()),
         'bin_power_timeseries': normalized_bin_power,
         'bin_dominant_band': bin_dominant_band,

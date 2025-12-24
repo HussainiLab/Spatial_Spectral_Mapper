@@ -34,7 +34,7 @@ from core.processors.spectral_functions import (
 )
 from core.worker_thread import WorkerSignals
 from PyQt5.QtGui import QPixmap, QFont
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtWidgets import *
 from core.worker_thread.Worker import Worker
 
@@ -370,6 +370,9 @@ class BinnedAnalysisWindow(QDialog):
         self.active_folder = active_folder or os.getcwd()
         self.current_chunk = 0
         self.show_percent_power = False
+        self.render_timer = QTimer(self)
+        self.render_timer.setSingleShot(True)
+        self.render_timer.timeout.connect(self.renderChunkViews)
         self.setWindowTitle("Binned Analysis Studio")
         self.setGeometry(100, 100, 1400, 900)
         self.initUI()
@@ -387,22 +390,33 @@ class BinnedAnalysisWindow(QDialog):
         # Control panel
         control_layout = QHBoxLayout()
         
-        # Time chunk slider
+        # Time chunk slider with step buttons
         slider_label = QLabel("Time Chunk:")
         control_layout.addWidget(slider_label)
+        
+        prev_btn = QPushButton("←", self)
+        prev_btn.setFixedWidth(36)
+        prev_btn.clicked.connect(partial(self.stepChunk, -1))
+        control_layout.addWidget(prev_btn)
         
         self.chunk_slider = QSlider(Qt.Horizontal)
         self.chunk_slider.setMinimum(0)
         if self.binned_data:
             self.chunk_slider.setMaximum(max(0, self.binned_data['time_chunks'] - 1))
         self.chunk_slider.setSingleStep(1)
+        self.chunk_slider.setPageStep(1)
         self.chunk_slider.setValue(0)
-        self.chunk_slider.setMaximumWidth(300)
+        self.chunk_slider.setMaximumWidth(260)
         self.chunk_slider.valueChanged.connect(self.onChunkChanged)
         control_layout.addWidget(self.chunk_slider)
         
+        next_btn = QPushButton("→", self)
+        next_btn.setFixedWidth(36)
+        next_btn.clicked.connect(partial(self.stepChunk, 1))
+        control_layout.addWidget(next_btn)
+        
         self.chunk_display_label = QLabel("0 / 1")
-        self.chunk_display_label.setMinimumWidth(60)
+        self.chunk_display_label.setMinimumWidth(70)
         control_layout.addWidget(self.chunk_display_label)
         
         # Power mode toggle
@@ -492,8 +506,27 @@ class BinnedAnalysisWindow(QDialog):
         '''Update chunk display and re-render on slider change'''
         self.current_chunk = value
         max_chunks = self.binned_data['time_chunks'] if self.binned_data else 1
-        self.chunk_display_label.setText(f"{value} / {max_chunks - 1}")
-        self.renderChunkViews()
+        # Show chunk index and time range for consistency with main GUI
+        if self.binned_data and 'chunk_size' in self.binned_data:
+            cs = self.binned_data['chunk_size']
+            t_start = value * cs
+            # Clamp end to actual duration for the last chunk
+            duration = float(self.binned_data.get('duration', (max_chunks * cs)))
+            t_end_nominal = (value + 1) * cs
+            t_end = min(t_end_nominal, duration)
+            self.chunk_display_label.setText(f"Chunk {value+1}/{max_chunks} ({t_start:.0f}-{t_end:.0f}s)")
+        else:
+            self.chunk_display_label.setText(f"Chunk {value+1}/{max_chunks}")
+        # Debounce rendering to keep slider smooth
+        self.render_timer.start(60)
+
+    def stepChunk(self, delta):
+        '''Increment/decrement the chunk slider and render'''
+        if self.binned_data is None:
+            return
+        max_chunks = self.binned_data['time_chunks'] if self.binned_data else 1
+        new_val = int(np.clip(self.chunk_slider.value() + delta, 0, max_chunks - 1))
+        self.chunk_slider.setValue(new_val)
     
     def onPowerModeToggled(self, checked):
         '''Toggle between absolute and percent power'''
@@ -531,7 +564,7 @@ class BinnedAnalysisWindow(QDialog):
                     occ_pixmap = occ_pixmap.scaledToWidth(600, Qt.SmoothTransformation)
                 self.occ_label.setPixmap(occ_pixmap)
             
-            self.status_label.setText(f"Chunk {self.current_chunk} rendered")
+            self.status_label.setText(f"Chunk {self.current_chunk + 1} rendered")
         except Exception as e:
             self.status_label.setText(f"Error rendering views: {str(e)}")
     
@@ -554,7 +587,7 @@ class BinnedAnalysisWindow(QDialog):
         
         fig, axes = plt.subplots(2, 4, figsize=(16, 8))
         power_type = "Percent Power" if show_percent else "Power"
-        fig.suptitle(f'4x4 Spatial Bins - Chunk {chunk_idx} (Frequency Band {power_type})', 
+        fig.suptitle(f'4x4 Spatial Bins - Chunk {chunk_idx + 1} (Frequency Band {power_type})', 
                      fontsize=14, fontweight='bold')
         
         bands = self.binned_data['bands']
@@ -590,7 +623,7 @@ class BinnedAnalysisWindow(QDialog):
                 chunk_power = np.divide(chunk_power, total_power, where=total_power>0, 
                                        out=np.zeros_like(chunk_power)) * 100
             
-            im = axes[0, idx].imshow(chunk_power, cmap='turbo', aspect='auto',
+            im = axes[0, idx].imshow(chunk_power, cmap='turbo', aspect='equal', interpolation='nearest',
                                      vmin=vmin_all[band], vmax=vmax_all[band])
             axes[0, idx].set_title(f'{band}')
             axes[0, idx].set_xticks([0, 1, 2, 3])
@@ -611,7 +644,7 @@ class BinnedAnalysisWindow(QDialog):
                                 for b in bands)
                 chunk_power = np.divide(chunk_power, total_power, where=total_power>0, 
                                        out=np.zeros_like(chunk_power)) * 100
-            im = axes[1, idx].imshow(chunk_power, cmap='turbo', aspect='auto',
+            im = axes[1, idx].imshow(chunk_power, cmap='turbo', aspect='equal', interpolation='nearest',
                                      vmin=vmin_all[band], vmax=vmax_all[band])
             axes[1, idx].set_title(f'{band}')
             axes[1, idx].set_xticks([0, 1, 2, 3])
@@ -637,7 +670,7 @@ class BinnedAnalysisWindow(QDialog):
             
         fig, axes = plt.subplots(2, 4, figsize=(16, 8), subplot_kw={'projection': 'polar'})
         power_type = "Percent Power" if show_percent else "Power"
-        fig.suptitle(f'Polar Bins - Chunk {chunk_idx} (Frequency Band {power_type})', 
+        fig.suptitle(f'Polar Bins - Chunk {chunk_idx + 1} (Frequency Band {power_type})', 
                      fontsize=14, fontweight='bold')
         
         bands = self.binned_data['bands']
@@ -695,7 +728,7 @@ class BinnedAnalysisWindow(QDialog):
         
         # Left panel: Occupancy
         occupancy = self.binned_data['bin_occupancy']
-        im1 = axes[0].imshow(occupancy, cmap='turbo', aspect='auto')
+        im1 = axes[0].imshow(occupancy, cmap='turbo', aspect='equal', interpolation='nearest')
         axes[0].set_title('Bin Occupancy (Total Time Spent)')
         axes[0].set_xticks([0, 1, 2, 3])
         axes[0].set_yticks([0, 1, 2, 3])
@@ -713,8 +746,8 @@ class BinnedAnalysisWindow(QDialog):
                 band = dominant_chunk[x, y]
                 numeric_dominant[x, y] = band_map.get(band, 0)
         
-        im2 = axes[1].imshow(numeric_dominant, cmap='tab10', aspect='auto', vmin=0, vmax=len(bands)-1)
-        axes[1].set_title(f'Dominant Band - Chunk {chunk_idx}')
+        im2 = axes[1].imshow(numeric_dominant, cmap='tab10', aspect='equal', interpolation='nearest', vmin=0, vmax=len(bands)-1)
+        axes[1].set_title(f'Dominant Band - Chunk {chunk_idx + 1}')
         axes[1].set_xticks([0, 1, 2, 3])
         axes[1].set_yticks([0, 1, 2, 3])
         axes[1].grid(True, alpha=0.3)
@@ -761,7 +794,7 @@ class BinnedAnalysisWindow(QDialog):
         
         im2 = axes[1].pcolormesh(T, R, numeric_dominant, cmap='tab10', shading='flat',
                                  vmin=0, vmax=len(bands)-1)
-        axes[1].set_title(f'Dominant Band - Chunk {chunk_idx}')
+        axes[1].set_title(f'Dominant Band - Chunk {chunk_idx + 1}')
         axes[1].set_yticklabels([])
         
         cbar2 = plt.colorbar(im2, ax=axes[1], ticks=range(len(bands)), pad=0.1)
@@ -784,7 +817,13 @@ class BinnedAnalysisWindow(QDialog):
             self.chunk_slider.setMaximum(max(0, max_chunks - 1))
             self.chunk_slider.setValue(0)
             self.current_chunk = 0
-            self.chunk_display_label.setText(f"0 / {max_chunks - 1}")
+            if 'chunk_size' in binned_data:
+                cs = binned_data['chunk_size']
+                duration = float(binned_data.get('duration', (max_chunks * cs)))
+                t_end = min(cs, duration)
+                self.chunk_display_label.setText(f"Chunk 1/{max_chunks} (0-{t_end:.0f}s)")
+            else:
+                self.chunk_display_label.setText(f"Chunk 1/{max_chunks}")
             self.renderChunkViews()
             
             if binned_data.get('type') == 'polar':
@@ -816,7 +855,7 @@ class BinnedAnalysisWindow(QDialog):
                     fig, _ = self._create_polar_power_heatmap(chunk_idx, show_percent=False)
                 else:
                     fig, _ = self._create_power_heatmap(chunk_idx, show_percent=False)
-                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_mean_power.jpg")
+                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx+1:02d}_mean_power.jpg")
                 fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
                 plt.close(fig)
                 export_count += 1
@@ -827,7 +866,7 @@ class BinnedAnalysisWindow(QDialog):
                     fig, _ = self._create_polar_power_heatmap(chunk_idx, show_percent=True)
                 else:
                     fig, _ = self._create_power_heatmap(chunk_idx, show_percent=True)
-                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_percent_power.jpg")
+                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx+1:02d}_percent_power.jpg")
                 fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
                 plt.close(fig)
                 export_count += 1
@@ -861,7 +900,7 @@ class BinnedAnalysisWindow(QDialog):
                     fig, _ = self._create_polar_occupancy_heatmap(chunk_idx)
                 else:
                     fig, _ = self._create_occupancy_heatmap(chunk_idx)
-                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx}_dominant_band.jpg")
+                jpg_path = os.path.join(output_folder, f"{base_name}_chunk{chunk_idx+1:02d}_dominant_band.jpg")
                 fig.savefig(jpg_path, format='jpg', pil_kwargs={'quality': 85}, bbox_inches='tight')
                 plt.close(fig)
                 export_count += 1
@@ -1788,9 +1827,18 @@ class frequencyPlotWindow(QWidget):
             self.tracking_canvas.axes.set_ylabel('Y - coordinates')
             self.tracking_canvas.axes.plot(self.tracking_data[0][value], self.tracking_data[1][value], linewidth=0.5)
             self.tracking_canvas.draw()
-        # Reflect what time interval we are plotting
-        if self.pos_t is not None:
-            self.timeInterval_Label.setText( "{:.3f}".format(self.pos_t[value]) + "s" )
+        # Reflect chunk and its nominal time range (consistent with binned slider)
+        if self.pos_t is not None and self.chunk_size is not None:
+            total_chunks = (self.slider.maximum() + 1) if self.slider is not None else 1
+            t_start = value * self.chunk_size
+            # Clamp end to actual duration for the last chunk if binned data is available
+            if hasattr(self, 'binned_data') and self.binned_data and 'duration' in self.binned_data:
+                duration = float(self.binned_data.get('duration', (total_chunks * self.chunk_size)))
+                t_end_nominal = (value + 1) * self.chunk_size
+                t_end = min(t_end_nominal, duration)
+            else:
+                t_end = (value + 1) * self.chunk_size
+            self.timeInterval_Label.setText(f"Chunk {value+1}/{total_chunks} ({t_start:.0f}-{t_end:.0f}s)")
         
         # Update power display with current chunk's frequency band percentages
         self.updatePowerDisplay(value)
