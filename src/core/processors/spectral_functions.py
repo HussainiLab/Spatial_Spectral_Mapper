@@ -12,7 +12,6 @@ from matplotlib import pyplot as plt
 from scipy import signal
 from scipy.integrate import trapezoid
 from scipy.signal import welch
-from math import floor
 from .Tint_Matlab import bits2uV
 from ..data_loaders import get_output_filename
 
@@ -96,7 +95,7 @@ def tPowers_Fband_chunked(chunks: np.ndarray, fs: int, window: str,
     
 # =========================================================================== #
 
-def compute_tracking_chunks(pos_x, pos_y, pos_t, chunk_size):
+def compute_tracking_chunks(pos_x, pos_y, pos_t, chunk_size, n_chunks=None):
     
     '''
         Chunks the position data into 'n' second intervals based on chunk size.
@@ -107,6 +106,8 @@ def compute_tracking_chunks(pos_x, pos_y, pos_t, chunk_size):
                 x,y position data coordinates and timestamp arrays respectively
             chunk_size (int):
                 Length of each chunk of position data in seconds
+            n_chunks (int, optional):
+                Expected number of chunks (aligns with EEG chunks to prevent off-by-one loss)
 
         Returns:
             Tuple: pos_x_chunks, pos_y_chunks
@@ -119,22 +120,28 @@ def compute_tracking_chunks(pos_x, pos_y, pos_t, chunk_size):
                     [ [y coordinates between 0s and n seconds], [y coordinates between 0 seconds and 2n seconds...] ...etc]
     '''
 
-    # Create a new 'spaced out' time vector that equally partitions the time vector based on chunk size.
-    spaced_t = np.linspace(0, floor(float(pos_t[-1]) / chunk_size), floor(float(pos_t[-1]) / chunk_size)+1) * chunk_size
-    # Find all the common indices between the spaced time vector and the timestamps (i.e experiment time) vector. 
-    common_indices = finder(pos_t, spaced_t)
-    # Grab corresponding timestamps from the pos_t vector with the common indices
-    chosen_times = pos_t[common_indices]
+    # Align number of chunks to the EEG chunk count when available
+    if n_chunks is None:
+        n_chunks = int(np.ceil(float(pos_t[-1]) / float(chunk_size)))
+    n_chunks = max(int(n_chunks), 1)
 
-    # We will append elements to this list
+    # Build chunk boundaries in time, then convert to indices while ensuring full coverage
+    spaced_t = np.arange(0, n_chunks + 1, dtype=float) * float(chunk_size)
+    if spaced_t[-1] < float(pos_t[-1]):
+        spaced_t[-1] = float(pos_t[-1])
+
+    boundaries = np.searchsorted(pos_t, spaced_t, side='left')
+    boundaries[-1] = len(pos_t)
+    boundaries = np.clip(boundaries, 0, len(pos_t))
+    boundaries = np.maximum.accumulate(boundaries)
+
     pos_x_chunks = []
     pos_y_chunks = []
 
-    # Iterate through each 'time chunk', and append the tracking data per chunk
-    # Start from index 1 to skip the first boundary (0s) and build cumulative chunks
-    for i in range(1, len(common_indices)):
-        pos_x_chunks.append(pos_x[:common_indices[i]])
-        pos_y_chunks.append(pos_y[:common_indices[i]])
+    # Iterate through each 'time chunk', and append the tracking data per chunk (cumulative slices)
+    for i in range(1, len(boundaries)):
+        pos_x_chunks.append(pos_x[:boundaries[i]])
+        pos_y_chunks.append(pos_y[:boundaries[i]])
 
     return pos_x_chunks, pos_y_chunks
 
@@ -175,8 +182,9 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
     scaling_factor_perBand = kwargs.get('scaling_factor_perBand', None)
     
     # Set kernel and std block sizes to about 20% of the map sizes in preparation for convolutional smoothing.
-    kernlen = int(256*0.2)
-    std = int(kernlen*0.2)
+    map_res = 200
+    kernlen = int(map_res * 0.2)
+    std = int(kernlen * 0.2)
 
     # Smooth via kernel convolution
     kernel = gkern(kernlen,std)
@@ -193,8 +201,8 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
     
     # Calculate the new dimensions of the frequncy map
     resize_ratio = np.abs(max_x - min_x) / np.abs(max_y - min_y)
-    # Ensure the largest dimension of the map is 256
-    base_resolution_scale = 256
+    # Ensure the largest dimension of the map is 200
+    base_resolution_scale = map_res
     
     # Adjust the map dimensions based on which side is longer or shorter
     if resize_ratio > 1:
@@ -205,39 +213,44 @@ def compute_freq_map(self, freq_range: str, pos_x: np.ndarray, pos_y: np.ndarray
         x_resize = base_resolution_scale
         y_resize = int(np.ceil (base_resolution_scale*(1/resize_ratio)))
      
-    # If the map is perfectly symmetrical, set both sides to 256
+    # If the map is perfectly symmetrical, set both sides to 200
     else: 
         x_resize = base_resolution_scale
         y_resize = base_resolution_scale
     
-    # Equally part the x and y dimensions of the map into 256 spatial bins
-    row_values = np.linspace(min_x,max_x,256)
-    column_values = np.linspace(min_y,max_y,256)
+    # Equally part the x and y dimensions of the map into 200 spatial bins
+    row_values = np.linspace(min_x, max_x, map_res)
+    column_values = np.linspace(min_y, max_y, map_res)
     
-    # Create a new 'spaced out' time vector that equally partitions the time vector based on chunk size.
-    spaced_t = np.linspace(0, floor(pos_t[-1] / chunk_size), floor(pos_t[-1] / chunk_size)+1) * chunk_size
-    # Find all the common indices between the spaced time vector and the timestamps (i.e experiment time) vector. 
-    common_indices = finder(pos_t, spaced_t)
-    # Grab corresponding timestamps from the pos_t vector with the common indices
-    chosen_times = pos_t[common_indices]
+    # Build chunk boundaries based on the EEG chunk count to avoid off-by-one drop
+    n_chunks = len(chunks)
+    spaced_t = np.arange(0, n_chunks + 1, dtype=float) * float(chunk_size)
+    if spaced_t[-1] < float(pos_t[-1]):
+        spaced_t[-1] = float(pos_t[-1])
+
+    boundaries = np.searchsorted(pos_t, spaced_t, side='left')
+    boundaries[-1] = len(pos_t)
+    boundaries = np.clip(boundaries, 0, len(pos_t))
+    boundaries = np.maximum.accumulate(boundaries)
     
     # Compute a scaling factor for the occupancy map
     occ_fs = float(pos_t[1] - pos_t[0])
     occ_scaling_factor = len(pos_t) * occ_fs
     maximum_value = index = 0
-    # Initialize the number of maps based on the number of chunks
-    # Use correct indexing: range(1, len(common_indices)) instead of len(common_indices[1:])
-    maps = [None] * (len(common_indices) - 1)
+    # Initialize the number of maps based on the number of EEG chunks
+    maps = [None] * n_chunks
     
     # Iterate through each 'time chunk', and generate the maps per chunk
-    for i in range(1, len(common_indices)):
+    for i in range(n_chunks):
+        start_idx = boundaries[i]
+        end_idx = boundaries[i + 1]
         
         # Initialize empty occupancy and eeg maps
-        occ_map_raw = np.zeros((256,256))
-        eeg_map_raw = np.zeros((256,256))
+        occ_map_raw = np.zeros((map_res, map_res))
+        eeg_map_raw = np.zeros((map_res, map_res))
         
         # Build the occupancy and eeg maps for the current time chunk
-        for j in range(common_indices[i-1], common_indices[i]):         
+        for j in range(start_idx, end_idx):
             # Grab the row and column where the mice is based on timestamp
             row_index = np.abs(row_values - float(pos_x[j])).argmin()
             column_index = np.abs(column_values - float(pos_y[j])).argmin()
@@ -321,11 +334,10 @@ def compute_scaling_and_tPowers(self, window: str, pos_x: np.ndarray, pos_y: np.
                 Array of power spectrum densities and frequencies per chunk
     '''
 
-    # Smooth via kernel convolution
-    # Set kernel and stdev block sizes to 20% map size
-    kernlen = int(256*0.2)
-    std = int(kernlen*0.2)
-    kernel = gkern(kernlen,std)
+    # Smooth via kernel convolution (keep consistent with map resolution of 200px)
+    kernlen = int(200 * 0.2)
+    std = int(kernlen * 0.2)
+    kernel = gkern(kernlen, std)
     
     # Create dictionary defining frequency bands and corresponding ranges in Hz
     freq_ranges = {'Delta': np.array([1, 3]), 
@@ -505,13 +517,18 @@ def compute_binned_freq_analysis(pos_x: np.ndarray, pos_y: np.ndarray, pos_t: np
     y_bin_edges = np.linspace(min_y, max_y, 5)
     
     # Time vector for associating chunks
-    time_vec = np.linspace(0, pos_t[-1], len(chunks))
-    
-    # Create time chunk indices
-    spaced_t = np.linspace(0, floor(pos_t[-1] / chunk_size), 
-                          floor(pos_t[-1] / chunk_size) + 1) * chunk_size
-    common_indices = finder(pos_t, spaced_t)
-    n_time_chunks = len(common_indices) - 1
+    n_time_chunks = len(chunks)
+    time_vec = np.linspace(0, pos_t[-1], n_time_chunks)
+
+    # Create time chunk indices aligned to EEG chunks (prevents dropping the last bin)
+    spaced_t = np.arange(0, n_time_chunks + 1, dtype=float) * float(chunk_size)
+    if spaced_t[-1] < float(pos_t[-1]):
+        spaced_t[-1] = float(pos_t[-1])
+
+    boundaries = np.searchsorted(pos_t, spaced_t, side='left')
+    boundaries[-1] = len(pos_t)
+    boundaries = np.clip(boundaries, 0, len(pos_t))
+    boundaries = np.maximum.accumulate(boundaries)
     
     # Initialize data structures
     bin_power_timeseries = {band: np.zeros((4, 4, n_time_chunks)) 
@@ -524,11 +541,13 @@ def compute_binned_freq_analysis(pos_x: np.ndarray, pos_y: np.ndarray, pos_t: np
     occ_scaling_factor = len(pos_t) * occ_fs
     
     # Process each time chunk
-    for chunk_idx in range(1, len(common_indices)):
-        chunk_num = chunk_idx - 1
+    for chunk_idx in range(n_time_chunks):
+        chunk_num = chunk_idx
+        start_idx = boundaries[chunk_idx]
+        end_idx = boundaries[chunk_idx + 1]
         
         # Process each position sample in this time chunk
-        for pos_idx in range(common_indices[chunk_idx - 1], common_indices[chunk_idx]):
+        for pos_idx in range(start_idx, end_idx):
             x_pos = float(pos_x[pos_idx])
             y_pos = float(pos_y[pos_idx])
             t_pos = float(pos_t[pos_idx])
@@ -590,6 +609,8 @@ def compute_binned_freq_analysis(pos_x: np.ndarray, pos_y: np.ndarray, pos_t: np
         'x_bin_edges': x_bin_edges,
         'y_bin_edges': y_bin_edges,
         'time_chunks': n_time_chunks,
+        'chunk_size': chunk_size,
+        'duration': float(pos_t[-1]) if len(pos_t) else float(n_time_chunks * chunk_size),
         'bands': list(freq_ranges.keys()),
         'bin_power_timeseries': normalized_bin_power,
         'bin_dominant_band': bin_dominant_band,

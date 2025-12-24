@@ -6,7 +6,7 @@ Created on Thu May 20 15:47:42 2021
 
 import numpy as np
 
-from math import floor
+from math import floor, ceil
 from matplotlib import cm
 from scipy.signal import welch
 from matplotlib import pyplot as plt
@@ -94,9 +94,12 @@ def compute_polar_binned_analysis(pos_x, pos_y, pos_t, fs, chunks, chunk_size, c
     theta = np.arctan2(ny, nx) # [-pi, pi]
     
     # 2. Define Bins
-    # Rings: 0-0.5 (Inner), 0.5-inf (Outer)
+    # Rings: Equal-area split at r = 1/sqrt(2) ≈ 0.7071
+    # Inner ring (0 to 0.7071): area = pi * 0.5
+    # Outer ring (0.7071 to 1.0): area = pi * 0.5
     n_rings = 2
-    r_bins = [0, 0.5, np.inf]
+    equal_area_radius = 1.0 / np.sqrt(2.0)  # ≈ 0.7071
+    r_bins = [0, equal_area_radius, np.inf]
     r_indices = np.digitize(r, r_bins) - 1 
     r_indices = np.clip(r_indices, 0, n_rings - 1)
     
@@ -154,6 +157,8 @@ def compute_polar_binned_analysis(pos_x, pos_y, pos_t, fs, chunks, chunk_size, c
     return {
         'type': 'polar',
         'time_chunks': n_chunks,
+        'chunk_size': chunk_size,
+        'duration': float(t[-1]) if len(t) else float(n_chunks * chunk_size),
         'bands': bands,
         'bin_power_timeseries': bin_power_timeseries,
         'bin_occupancy': bin_occupancy,
@@ -226,15 +231,31 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
     # Chunk eeg data 
     chunks = grab_chunks(electrophys_file, notch=60, chunk_size=chunk_size, chunk_overlap=0)
     
+    # Pad chunks if position data extends beyond EEG data
+    if len(new_pos_t) > 0 and len(chunks) > 0:
+        expected_chunks = ceil(new_pos_t[-1] / chunk_size)
+        if len(chunks) < expected_chunks:
+            print(f"  → Padding EEG: {len(chunks)} chunks found, {expected_chunks} expected. Padding with zeros.")
+            zero_chunk = np.zeros_like(chunks[0])
+            for _ in range(expected_chunks - len(chunks)):
+                chunks.append(zero_chunk)
+    
     print("  → Computing scaling factors and powers...")
     # Grab scaling factors. We compute this outside the loop since we only need it once. 
     scaling_factor_perBand, scaling_factor_crossband, chunk_pows_perBand, plot_data = compute_scaling_and_tPowers(self, window_type, pos_x, pos_y, pos_t, chunks, fs)
     
     print("  → Aligning time bins...")
     # Choose indices from time vector that most closely match the chunk size time steps
-    spaced_t = np.linspace(0, floor(new_pos_t[-1] / chunk_size), floor(new_pos_t[-1] / chunk_size)+1) * chunk_size
-    common_indices = finder(new_pos_t, spaced_t)
-    chosen_times = new_pos_t[common_indices[:-1]]  # Trim last timestamp since we have N-1 maps for N boundary points
+    num_chunks = len(chunks)
+    spaced_t = np.arange(0, num_chunks + 1, dtype=float) * float(chunk_size)
+    if spaced_t[-1] < float(new_pos_t[-1]):
+        spaced_t[-1] = float(new_pos_t[-1])
+
+    boundaries = np.searchsorted(new_pos_t, spaced_t, side='left')
+    boundaries[-1] = len(new_pos_t)
+    boundaries = np.clip(boundaries, 0, len(new_pos_t))
+    boundaries = np.maximum.accumulate(boundaries)
+    chosen_times = new_pos_t[boundaries[:-1]]  # One timestamp per chunk boundary start
     
     # Create a dictionary storing freq bands and corresponding freq ranges in Hz
     freq_ranges = {'Delta': np.array([1, 3]), 
@@ -262,7 +283,7 @@ def initialize_fMap(self, files: list, ppm: int, chunk_size: int, window_type: s
         self.signals.progress.emit(progress_indicator*20)
     
     print("  → Computing tracking chunks...")
-    pos_x_chunks, pos_y_chunks = compute_tracking_chunks(new_pos_x, new_pos_y, new_pos_t, chunk_size)
+    pos_x_chunks, pos_y_chunks = compute_tracking_chunks(new_pos_x, new_pos_y, new_pos_t, chunk_size, n_chunks=len(chunks))
     # Compute binned analysis (multi-band, time-tracked)
     try:
         if "Circle" in arena_shape or "Ellipse" in arena_shape:
