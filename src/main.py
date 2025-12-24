@@ -10,6 +10,7 @@ import os
 import sys
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 import numpy as np
 import csv
 import glob
@@ -589,13 +590,15 @@ class BinnedAnalysisWindow(QDialog):
                 chunk_power = np.divide(chunk_power, total_power, where=total_power>0, 
                                        out=np.zeros_like(chunk_power)) * 100
             
-            im = axes[0, idx].imshow(chunk_power, cmap='hot', aspect='auto',
+            im = axes[0, idx].imshow(chunk_power, cmap='turbo', aspect='auto',
                                      vmin=vmin_all[band], vmax=vmax_all[band])
             axes[0, idx].set_title(f'{band}')
             axes[0, idx].set_xticks([0, 1, 2, 3])
             axes[0, idx].set_yticks([0, 1, 2, 3])
             axes[0, idx].grid(True, alpha=0.3)
             cbar = plt.colorbar(im, ax=axes[0, idx])
+            if not show_percent:
+                cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{x*1e-3:g}K' if x >= 1000 else f'{x:g}'))
             cbar.set_label('%' if show_percent else 'Power', fontsize=9)
         
         # Second row: Remaining bands
@@ -608,14 +611,15 @@ class BinnedAnalysisWindow(QDialog):
                                 for b in bands)
                 chunk_power = np.divide(chunk_power, total_power, where=total_power>0, 
                                        out=np.zeros_like(chunk_power)) * 100
-            
-            im = axes[1, idx].imshow(chunk_power, cmap='hot', aspect='auto',
+            im = axes[1, idx].imshow(chunk_power, cmap='turbo', aspect='auto',
                                      vmin=vmin_all[band], vmax=vmax_all[band])
             axes[1, idx].set_title(f'{band}')
             axes[1, idx].set_xticks([0, 1, 2, 3])
             axes[1, idx].set_yticks([0, 1, 2, 3])
             axes[1, idx].grid(True, alpha=0.3)
             cbar = plt.colorbar(im, ax=axes[1, idx])
+            if not show_percent:
+                cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{x*1e-3:g}K' if x >= 1000 else f'{x:g}'))
             cbar.set_label('%' if show_percent else 'Power', fontsize=9)
         
         # Hide unused subplots
@@ -661,7 +665,7 @@ class BinnedAnalysisWindow(QDialog):
             
             # pcolormesh expects data to match grid cells
             # T, R shape is (3, 9). Data shape is (2, 8). Perfect.
-            im = ax.pcolormesh(T, R, data, cmap='hot', shading='flat')
+            im = ax.pcolormesh(T, R, data, cmap='turbo', shading='flat')
             
             ax.set_title(f'{band}')
             ax.set_yticklabels([])
@@ -670,6 +674,8 @@ class BinnedAnalysisWindow(QDialog):
             
             # Add colorbar
             cbar = plt.colorbar(im, ax=ax, pad=0.1, shrink=0.8)
+            if not show_percent:
+                cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda x, pos: f'{x*1e-3:g}K' if x >= 1000 else f'{x:g}'))
             cbar.set_label('%' if show_percent else 'Power', fontsize=8)
 
         # Hide unused subplots
@@ -689,7 +695,7 @@ class BinnedAnalysisWindow(QDialog):
         
         # Left panel: Occupancy
         occupancy = self.binned_data['bin_occupancy']
-        im1 = axes[0].imshow(occupancy, cmap='viridis', aspect='auto')
+        im1 = axes[0].imshow(occupancy, cmap='turbo', aspect='auto')
         axes[0].set_title('Bin Occupancy (Total Time Spent)')
         axes[0].set_xticks([0, 1, 2, 3])
         axes[0].set_yticks([0, 1, 2, 3])
@@ -736,7 +742,7 @@ class BinnedAnalysisWindow(QDialog):
         
         # Left: Occupancy
         occupancy = self.binned_data['bin_occupancy']
-        im1 = axes[0].pcolormesh(T, R, occupancy, cmap='viridis', shading='flat')
+        im1 = axes[0].pcolormesh(T, R, occupancy, cmap='turbo', shading='flat')
         axes[0].set_title('Bin Occupancy')
         axes[0].set_yticklabels([])
         cbar1 = plt.colorbar(im1, ax=axes[0], pad=0.1)
@@ -836,9 +842,9 @@ class BinnedAnalysisWindow(QDialog):
                 theta = np.linspace(-np.pi, np.pi, 9)
                 r = [0, 0.5, 1]
                 T, R = np.meshgrid(theta, r)
-                im = ax.pcolormesh(T, R, occ, cmap='viridis', shading='flat')
+                im = ax.pcolormesh(T, R, occ, cmap='turbo', shading='flat')
             else:
-                im = ax.imshow(occ, cmap='viridis', aspect='auto')
+                im = ax.imshow(occ, cmap='turbo', aspect='auto')
                 
             ax.set_title('Bin Occupancy (Total Time Spent)', fontsize=12, fontweight='bold')
             ax.grid(True, alpha=0.3)
@@ -1130,6 +1136,10 @@ class frequencyPlotWindow(QWidget):
         self.layout.addWidget(self.timeInterval_Label, 8, 3)
         self.layout.addWidget(self.progressBar_Label, 9, 3)
         self.layout.setSpacing(10)
+        
+        # Set column stretch to ensure frequency map and tracking plots resize equally
+        self.layout.setColumnStretch(1, 1)
+        self.layout.setColumnStretch(2, 1)
         
         # Hiding the canvas and graph label widget on startup 
         self.graph_canvas.close()
