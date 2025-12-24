@@ -124,7 +124,7 @@ def get_setfile_parameter(parameter, set_filename):
 
 
 def getpos(pos_fpath, ppm, method='', flip_y=True):
-    """
+    r"""
     getpos function:
     ---------------------------------------------
     variables:
@@ -340,7 +340,7 @@ def find_tetrodes(set_fullpath):
 
 
 def find_unit(tetrode_list):
-    """Inputs:
+    r"""Inputs:
     tetrode_list: list of tetrodes to find the units that are in the tetrode_path
     example [r'C:Location\of\File\filename.1', r'C:Location\of\File\filename.2' ],
     -------------------------------------------------------------
@@ -435,7 +435,7 @@ def arena_config(posx, posy, ppm, center, flip_y=True):
 
 
 def ReadEEG(eeg_fname):
-    """input:
+    r"""input:
     eeg_filename: the fullpath to the eeg file that is desired to be read.
     Example: C:\Location\of\eegfile.eegX
 
@@ -516,7 +516,7 @@ def findCenter(NE, NW, SW, SE):
 
 
 def bits2uV(data, data_fpath, set_fpath=''):
-    '''
+    r'''
 
     :param data:
     :param data_fpath: example: 'C:\example\filepath.whatever'
